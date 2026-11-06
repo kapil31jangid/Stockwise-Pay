@@ -1,0 +1,17 @@
+{
+  "name": "stockwise-supplier-intelligence",
+  "version": "1.0.0",
+  "description": "Supplier Intelligence and Budget Optimization module for StockWise Pay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test supplier-intelligence.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+
