@@ -4,12 +4,38 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import app from '../src/index.js';
 import { db } from '../src/db/index.js';
+import { signAuthToken } from '../src/middleware/auth.js';
 
 let server: any;
 let baseUrl = 'http://localhost:5055';
+
+export const approverToken = signAuthToken({
+  id: 'USR-001',
+  name: 'Marcus Vance',
+  email: 'marcus.vance@stockwisepay.com',
+  role: 'LEAD_APPROVER',
+  permissions: ['INVENTORY_VIEW', 'INVENTORY_EDIT', 'PLAN_GENERATE', 'PLAN_APPROVE', 'PAYMENT_EXECUTE']
+});
+
+export const buyerToken = signAuthToken({
+  id: 'USR-002',
+  name: 'Elena Rostova',
+  email: 'elena.rostova@stockwisepay.com',
+  role: 'BUYER',
+  permissions: ['INVENTORY_VIEW', 'SUPPLIERS_COMPARE', 'PLAN_GENERATE']
+});
+
+export const treasuryToken = signAuthToken({
+  id: 'USR-003',
+  name: 'David Chen',
+  email: 'david.chen@stockwisepay.com',
+  role: 'TREASURY',
+  permissions: ['BUDGET_EDIT', 'AUDIT_VIEW', 'PAYMENT_AUDIT', 'PLAN_APPROVE', 'PAYMENT_EXECUTE']
+});
+
 const authHeaders = {
   'Content-Type': 'application/json',
-  'Authorization': 'Bearer jwt-stockwise-USR-001-test'
+  'Authorization': `Bearer ${approverToken}`
 };
 
 const authFetch = (url: string, init?: RequestInit) => {
@@ -253,6 +279,131 @@ test('Auth: Completely invalid token string returns 401', async () => {
   const data = await res.json() as any;
   assert.equal(data.success, false);
   assert.match(data.error, /Unauthorized/i);
+});
+
+test('Auth: Forged token with tampered signature returns 401', async () => {
+  const parts = approverToken.split('.');
+  const tamperedSig = parts[2].slice(0, -3) + 'XYZ';
+  const forgedToken = `${parts[0]}.${parts[1]}.${tamperedSig}`;
+  const res = await fetch(`${baseUrl}/api/inventory`, {
+    headers: { 'Authorization': `Bearer ${forgedToken}` }
+  });
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /forged|invalid/i);
+});
+
+test('Auth: Arbitrary-user self-registration is strictly rejected', async () => {
+  const res = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'unauthorized-hacker@external.com', password: 'password123' })
+  });
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /Arbitrary self-registration is disabled/i);
+});
+
+test('Auth: Registered demo persona login succeeds with cryptographic JWT', async () => {
+  const res = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'marcus.vance@stockwisepay.com', password: 'ApproverPass2026!' })
+  });
+  assert.equal(res.status, 200);
+  const data = await res.json() as any;
+  assert.equal(data.success, true);
+  assert.ok(data.token);
+  assert.equal(data.user.role, 'Inventory Lead / Approver');
+});
+
+test('RBAC: Buyer (Elena) is forbidden from approving purchase plans', async () => {
+  const genRes = await authFetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 600, preference: 'CHEAPEST' })
+  });
+  const planId = (await genRes.json() as any).plan.id;
+
+  const approveRes = await fetch(`${baseUrl}/api/plans/${planId}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${buyerToken}`
+    },
+    body: JSON.stringify({ notes: 'Elena trying to approve' })
+  });
+  assert.equal(approveRes.status, 403);
+  const data = await approveRes.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /Forbidden/i);
+});
+
+test('RBAC: Buyer (Elena) is forbidden from executing PayPal payments', async () => {
+  const genRes = await authFetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 600, preference: 'CHEAPEST' })
+  });
+  const planId = (await genRes.json() as any).plan.id;
+
+  await authFetch(`${baseUrl}/api/plans/${planId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+
+  const orderRes = await fetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${buyerToken}`
+    },
+    body: JSON.stringify({ planId })
+  });
+  assert.equal(orderRes.status, 403);
+  const data = await orderRes.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /Forbidden/i);
+});
+
+test('Webhook Security: Rejects invalid certificate origin and detects duplicates', async () => {
+  const invalidCertRes = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': 'TX-1001',
+      'paypal-cert-url': 'https://attacker.evil.com/fake-cert.pem',
+      'paypal-transmission-sig': 'dummy-sig'
+    },
+    body: JSON.stringify({ event_type: 'PAYMENT.CAPTURE.COMPLETED' })
+  });
+  assert.equal(invalidCertRes.status, 400);
+
+  const validRes1 = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': 'TX-DUP-999',
+      'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-transmission-sig': 'dummy-sig'
+    },
+    body: JSON.stringify({ event_type: 'PAYMENT.CAPTURE.COMPLETED', id: 'WH-EVT-1' })
+  });
+  assert.equal(validRes1.status, 200);
+
+  const dupRes = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': 'TX-DUP-999',
+      'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-transmission-sig': 'dummy-sig'
+    },
+    body: JSON.stringify({ event_type: 'PAYMENT.CAPTURE.COMPLETED', id: 'WH-EVT-1' })
+  });
+  assert.equal(dupRes.status, 200);
+  const dupData = await dupRes.json() as any;
+  assert.equal(dupData.duplicate, true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

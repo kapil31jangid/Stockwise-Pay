@@ -96,47 +96,41 @@ export const api = {
   // --- INVENTORY API ---
   async getInventory(): Promise<InventoryItem[]> {
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/inventory`);
-        const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-        if (list.length > 0) {
-          return list.map((item: any, idx: number) => {
-            const unitCost = Number(item.unitCost || 10);
-            const retailPrice = Number(item.retailPrice ?? item.sellingPrice ?? (unitCost * 2));
-            const currentStock = Number(item.currentStock ?? 0);
-            const reorderPoint = Number(item.reorderPoint ?? item.safetyStock ?? 15);
-            const targetStock = Number(item.targetStock || (reorderPoint * 2) || 50);
-            const salesVelocityPerWeek = Number(item.salesVelocityPerWeek ?? (item.averageDailyDemand ? Math.round(item.averageDailyDemand * 7) : 10));
+      const res = await fetchJson<any>(`${API_BASE_URL}/inventory`);
+      const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+      return list.map((item: any, idx: number) => {
+        const unitCost = Number(item.unitCost || 10);
+        const retailPrice = Number(item.retailPrice ?? item.sellingPrice ?? (unitCost * 2));
+        const currentStock = Number(item.currentStock ?? 0);
+        const reorderPoint = Number(item.reorderPoint ?? item.safetyStock ?? 15);
+        const targetStock = Number(item.targetStock || (reorderPoint * 2) || 50);
+        const salesVelocityPerWeek = Number(item.salesVelocityPerWeek ?? (item.averageDailyDemand ? Math.round(item.averageDailyDemand * 7) : 10));
 
-            let status = item.status;
-            if (!status) {
-              if (currentStock === 0) status = "out_of_stock";
-              else if (currentStock <= reorderPoint * 0.5) status = "critical";
-              else if (currentStock <= reorderPoint) status = "low_stock";
-              else status = "in_stock";
-            }
-
-            return {
-              id: item.id || `item-${item.sku ? item.sku.toLowerCase() : idx}`,
-              sku: item.sku || `SKU-${idx + 1}`,
-              name: item.name || "Electronics Product",
-              category: item.category || "Accessories",
-              currentStock,
-              reorderPoint,
-              targetStock,
-              unitCost,
-              retailPrice,
-              salesVelocityPerWeek,
-              supplierName: item.supplierName || "Apex Wholesale Direct",
-              supplierId: item.supplierId || item.preferredVendorId || "sup-1",
-              status,
-              lastRestocked: item.lastRestocked || "2026-11-01",
-            };
-          });
+        let status = item.status;
+        if (!status) {
+          if (currentStock === 0) status = "out_of_stock";
+          else if (currentStock <= reorderPoint * 0.5) status = "critical";
+          else if (currentStock <= reorderPoint) status = "low_stock";
+          else status = "in_stock";
         }
-      } catch (err) {
-        console.warn("Failed to fetch inventory from API, using fallback:", err);
-      }
+
+        return {
+          id: item.id || `item-${item.sku ? item.sku.toLowerCase() : idx}`,
+          sku: item.sku || `SKU-${idx + 1}`,
+          name: item.name || "Electronics Product",
+          category: item.category || "Accessories",
+          currentStock,
+          reorderPoint,
+          targetStock,
+          unitCost,
+          retailPrice,
+          salesVelocityPerWeek,
+          supplierName: item.supplierName || "Apex Wholesale Direct",
+          supplierId: item.supplierId || item.preferredVendorId || "sup-1",
+          status,
+          lastRestocked: item.lastRestocked || "2026-11-01",
+        };
+      });
     }
     return getStoredData(STORAGE_KEYS.INVENTORY, initialInventory);
   },
@@ -363,17 +357,57 @@ export const api = {
     return plan;
   },
 
+  async getPurchasePlan(id: string): Promise<PurchasePlan | null> {
+    if (API_BASE_URL) {
+      const p = await fetchJson<any>(`${API_BASE_URL}/plans/${id}`);
+      if (!p) return null;
+      return {
+        id: p.id,
+        title: p.name || p.title || `Plan ${p.id}`,
+        createdAt: p.createdAt ? (p.createdAt.includes('T') ? p.createdAt.split('T')[0] : p.createdAt) : '2026-11-07',
+        totalAmount: Number(p.calculatedTotal ?? p.totalAmount ?? 0),
+        itemCount: Number(p.selectedItems?.length ?? p.itemCount ?? 0),
+        status: (p.planStatus || p.status || 'pending_approval') as any,
+        budget: Number(p.purchasingBudget ?? p.budget ?? 2000),
+        items: (p.selectedItems || p.items || []).map((i: any, iIdx: number) => ({
+          id: i.id || `item-${iIdx}`,
+          productId: i.productId || i.sku || `prod-${iIdx}`,
+          sku: i.sku,
+          productName: i.productName || i.sku,
+          category: i.category || 'Accessories',
+          currentStock: Number(i.currentStock || 10),
+          recommendedQty: Number(i.recommendedQuantity || i.quantity || 1),
+          recommendedQuantity: Number(i.recommendedQuantity || i.quantity || 1),
+          selectedQty: Number(i.recommendedQuantity || i.quantity || 1),
+          quantity: Number(i.recommendedQuantity || i.quantity || 1),
+          unitCost: Number(i.unitCost || 0),
+          subtotal: Number(i.subtotal || 0),
+          isSelected: true,
+          supplierName: i.supplierName || 'Primary Supplier',
+          selectedSupplierName: i.supplierName || 'Primary Supplier',
+          supplierId: i.supplierId || 'SUP001',
+          selectedSupplierId: i.supplierId || 'SUP001',
+          leadTimeDays: Number(i.leadTimeDays || 3),
+          riskLevel: i.riskLevel || 'MEDIUM',
+          daysUntilStockout: Number(i.daysUntilStockout || 5)
+        })),
+        notes: p.notes,
+        approvalNotes: p.approval?.decisionNotes,
+        approvedAt: p.approval?.timestamp,
+        approvedBy: p.approval?.approverName
+      };
+    }
+    const plans = await this.getPurchasePlans();
+    return plans.find(p => p.id === id) || null;
+  },
+
   async approvePlan(planId: string, approverName: string = 'Marcus Vance', notes?: string, approverRole: string = 'Inventory Lead') {
     if (API_BASE_URL) {
-      try {
-        return await fetchJson<any>(`${API_BASE_URL}/plans/${planId}/approve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ approverName, approverRole, notes }),
-        });
-      } catch (err) {
-        console.warn("Backend approvePlan error:", err);
-      }
+      return await fetchJson<any>(`${API_BASE_URL}/plans/${planId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approverName, approverRole, notes }),
+      });
     }
   },
 

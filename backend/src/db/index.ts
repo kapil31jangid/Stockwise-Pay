@@ -75,6 +75,27 @@ class DatabaseStore {
     }
   }
 
+  public async verifyConnection(): Promise<void> {
+    if (this.pgPool) {
+      try {
+        const client = await this.pgPool.connect();
+        await client.query('SELECT 1;');
+        client.release();
+        console.log('✅ PostgreSQL connection verified successfully.');
+      } catch (err: any) {
+        if (process.env.NODE_ENV === 'production') {
+          console.error('FATAL: Database connection verification failed in production:', err);
+          throw new Error(`Production database connection failed: ${err.message}`);
+        }
+        console.warn('⚠️ PostgreSQL connection failed, running in local store fallback mode (dev):', err.message);
+        this.isPostgres = false;
+        this.pgPool = null;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: DATABASE_URL environment variable is required in production.');
+    }
+  }
+
   private handlePgError(operation: string, err: any): void {
     console.warn(`PostgreSQL ${operation} error:`, err?.message || err);
     if (process.env.NODE_ENV === 'production') {
@@ -761,10 +782,163 @@ class DatabaseStore {
         `);
         if (res.rows.length > 0) return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getPayments error:', err);
+        this.handlePgError('getPayments', err);
       }
     }
     return [...this.state.payments].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  /**
+   * Atomic Payment Capture Transaction with Row-Level Locking and Budget Ceiling Protection
+   */
+  public async executePaymentCaptureTransaction(params: {
+    payment: PaymentRecord;
+    planId: string;
+    amount: number;
+    actor: string;
+    captureId: string;
+    rawPaypalResponse?: any;
+    payerEmail?: string;
+  }): Promise<{ payment: PaymentRecord; budget: BudgetConfigRecord }> {
+    const { payment, planId, amount, actor, captureId, rawPaypalResponse, payerEmail } = params;
+
+    if (this.pgPool) {
+      const client = await this.pgPool.connect();
+      try {
+        await client.query('BEGIN;');
+
+        // 1. Lock and verify payment record
+        const payRes = await client.query(
+          `SELECT id, verified_status AS "verifiedStatus", amount::float FROM payments WHERE id = $1 FOR UPDATE;`,
+          [payment.id]
+        );
+        if (payRes.rows.length === 0) {
+          throw new Error(`Payment record ${payment.id} not found in database.`);
+        }
+        if (payRes.rows[0].verifiedStatus === 'COMPLETED') {
+          await client.query('ROLLBACK;');
+          return { payment, budget: await this.getBudget() };
+        }
+
+        // 2. Lock and verify budget record to prevent double-spending
+        const budgetRes = await client.query(
+          `SELECT id, monthly_budget::float AS "monthlyBudget", spent_amount::float AS "spentAmount", allocated_amount::float AS "allocatedAmount" FROM budget_config LIMIT 1 FOR UPDATE;`
+        );
+        const currentBudget = budgetRes.rows[0] || { id: 'default', monthlyBudget: 5000, spentAmount: 0, allocatedAmount: 0 };
+        const budgetId = currentBudget.id || 'default';
+        const newSpent = Number((currentBudget.spentAmount + amount).toFixed(2));
+        if (newSpent > currentBudget.monthlyBudget + 0.01) {
+          throw new Error(`Transaction rejected: Budget ceiling exceeded ($${newSpent.toFixed(2)} / $${currentBudget.monthlyBudget.toFixed(2)}).`);
+        }
+        const newAllocated = Math.max(0, Number((currentBudget.allocatedAmount - amount).toFixed(2)));
+
+        // 3. Update budget
+        await client.query(
+          `UPDATE budget_config SET spent_amount = $1, allocated_amount = $2, updated_at = $3 WHERE id = $4;`,
+          [newSpent, newAllocated, new Date().toISOString(), budgetId]
+        );
+
+        // 4. Update plan status to 'paid'
+        await client.query(
+          `UPDATE purchase_plans SET plan_status = 'paid', updated_at = $1 WHERE id = $2;`,
+          [new Date().toISOString(), planId]
+        );
+
+        // 5. Update payment record to COMPLETED
+        const updatedPayment: PaymentRecord = {
+          ...payment,
+          paypalCaptureId: captureId,
+          verifiedStatus: 'COMPLETED',
+          payerEmail: payerEmail || payment.payerEmail || 'buyer-retail@stockwise.test',
+          rawPaypalResponse: rawPaypalResponse || payment.rawPaypalResponse,
+          updatedAt: new Date().toISOString()
+        };
+        await client.query(
+          `UPDATE payments SET paypal_capture_id = $1, verified_status = 'COMPLETED', payer_email = $2, raw_paypal_response = $3, updated_at = $4 WHERE id = $5;`,
+          [captureId, updatedPayment.payerEmail, JSON.stringify(updatedPayment.rawPaypalResponse || {}), updatedPayment.updatedAt, payment.id]
+        );
+
+        // 6. Insert immutable audit log
+        await client.query(
+          `INSERT INTO audit_logs (id, actor, action, entity_type, entity_id, previous_status, new_status, details, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+          [
+            `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            actor,
+            'CAPTURE_PAYPAL_ORDER',
+            'PAYMENT',
+            captureId,
+            'CREATED',
+            'COMPLETED',
+            JSON.stringify({ orderId: payment.paypalOrderId, captureId, amount }),
+            new Date().toISOString()
+          ]
+        );
+
+        await client.query('COMMIT;');
+
+        // Sync local memory state
+        const idx = this.state.payments.findIndex(p => p.id === payment.id);
+        if (idx >= 0) this.state.payments[idx] = updatedPayment;
+        const planIdx = this.state.purchasePlans.findIndex(p => p.id === planId);
+        if (planIdx >= 0) this.state.purchasePlans[planIdx].planStatus = 'paid';
+        this.state.budget.spentAmount = newSpent;
+        this.state.budget.allocatedAmount = newAllocated;
+        this.save();
+
+        return { payment: updatedPayment, budget: { ...currentBudget, spentAmount: newSpent, allocatedAmount: newAllocated } };
+      } catch (err: any) {
+        await client.query('ROLLBACK;');
+        this.handlePgError('executePaymentCaptureTransaction', err);
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    // Local in-memory transaction with strict balance enforcement
+    const payIdx = this.state.payments.findIndex(p => p.id === payment.id);
+    if (payIdx < 0) throw new Error(`Payment record ${payment.id} not found.`);
+    if (this.state.payments[payIdx].verifiedStatus === 'COMPLETED') {
+      return { payment: this.state.payments[payIdx], budget: this.state.budget };
+    }
+
+    const currentBudget = this.state.budget;
+    const newSpent = Number((currentBudget.spentAmount + amount).toFixed(2));
+    if (newSpent > currentBudget.monthlyBudget + 0.01) {
+      throw new Error(`Transaction rejected: Budget ceiling exceeded ($${newSpent.toFixed(2)} / $${currentBudget.monthlyBudget.toFixed(2)}).`);
+    }
+
+    const updatedPayment: PaymentRecord = {
+      ...payment,
+      paypalCaptureId: captureId,
+      verifiedStatus: 'COMPLETED',
+      payerEmail: payerEmail || payment.payerEmail || 'buyer-retail@stockwise.test',
+      rawPaypalResponse: rawPaypalResponse || payment.rawPaypalResponse,
+      updatedAt: new Date().toISOString()
+    };
+    this.state.payments[payIdx] = updatedPayment;
+
+    const plan = this.state.purchasePlans.find(p => p.id === planId);
+    if (plan) plan.planStatus = 'paid';
+
+    this.state.budget.spentAmount = newSpent;
+    this.state.budget.allocatedAmount = Math.max(0, Number((currentBudget.allocatedAmount - amount).toFixed(2)));
+
+    this.state.auditLogs.unshift({
+      id: `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      actor,
+      action: 'CAPTURE_PAYPAL_ORDER',
+      entityType: 'PAYMENT',
+      entityId: captureId,
+      previousStatus: 'CREATED',
+      newStatus: 'COMPLETED',
+      details: { orderId: payment.paypalOrderId, captureId, amount },
+      createdAt: new Date().toISOString()
+    });
+
+    this.save();
+    return { payment: updatedPayment, budget: this.state.budget };
   }
 
   async savePaymentEvent(event: any): Promise<any> {

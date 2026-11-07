@@ -299,12 +299,26 @@ router.get('/:id/versions', async (req: Request, res: Response) => {
 
 /**
  * POST /api/plans/:id/approve
- * Explicit human approval with version-locking
+ * Explicit human approval with version-locking and role-based authorization
  */
 router.post('/:id/approve', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { approverName = 'Marcus Vance', approverRole = 'Inventory Lead', notes } = req.body;
+    const { notes } = req.body;
+
+    // Server-side role authorization: Only LEAD_APPROVER or TREASURY can approve purchase plans
+    const userRole = req.user?.role;
+    if (userRole !== 'LEAD_APPROVER' && userRole !== 'TREASURY') {
+      return res.status(403).json({
+        success: false,
+        error: `Forbidden: User with role '${userRole || 'ANONYMOUS'}' is not authorized to approve purchase plans. Only LEAD_APPROVER or TREASURY roles are permitted.`,
+        code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
+    // Actor identity is strictly taken from the verified session
+    const approverName = req.user?.name || 'Marcus Vance';
+    const approverRole = req.user?.role === 'TREASURY' ? 'Chief Financial Officer' : 'Inventory Lead';
 
     const plan = await db.getPurchasePlan(id);
     if (!plan) {
@@ -353,12 +367,24 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 
 /**
  * POST /api/plans/:id/reject
- * Reject proposed purchase plan
+ * Reject proposed purchase plan with role-based authorization
  */
 router.post('/:id/reject', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { approverName = 'Marcus Vance', notes } = req.body;
+    const { notes } = req.body;
+
+    const userRole = req.user?.role;
+    if (userRole !== 'LEAD_APPROVER' && userRole !== 'TREASURY') {
+      return res.status(403).json({
+        success: false,
+        error: `Forbidden: User with role '${userRole || 'ANONYMOUS'}' is not authorized to reject purchase plans.`,
+        code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
+    const approverName = req.user?.name || 'Marcus Vance';
+    const approverRole = req.user?.role === 'TREASURY' ? 'Chief Financial Officer' : 'Inventory Lead';
 
     const plan = await db.getPurchasePlan(id);
     if (!plan) {
@@ -370,7 +396,7 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
       purchasePlanId: id,
       approvedVersion: plan.currentVersion,
       approverName,
-      approverRole: 'Inventory Lead',
+      approverRole,
       status: 'rejected',
       decisionNotes: notes || 'Rejected by manager',
       timestamp: new Date().toISOString()

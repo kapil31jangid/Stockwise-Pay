@@ -10,11 +10,21 @@ const router = Router();
  */
 router.post('/orders', async (req: Request, res: Response) => {
   try {
-    const { planId, actor = 'Procurement Manager' } = req.body;
+    const userRole = req.user?.role;
+    if (userRole !== 'LEAD_APPROVER' && userRole !== 'TREASURY') {
+      return res.status(403).json({
+        success: false,
+        error: `Forbidden: User with role '${userRole || 'ANONYMOUS'}' is not authorized to initiate PayPal orders. Only LEAD_APPROVER or TREASURY roles are permitted.`,
+        code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
+    const { planId } = req.body;
     if (!planId) {
       return res.status(400).json({ success: false, error: 'Missing required field: planId' });
     }
 
+    const actor = req.user?.name || 'Procurement Manager';
     const result = await paypalService.createOrder(planId, actor);
     res.status(201).json({
       success: true,
@@ -32,18 +42,29 @@ router.post('/orders', async (req: Request, res: Response) => {
  */
 router.post('/create-order', async (req: Request, res: Response) => {
   try {
-    const { planId, actor = 'Procurement Manager' } = req.body;
+    const userRole = req.user?.role;
+    if (userRole !== 'LEAD_APPROVER' && userRole !== 'TREASURY') {
+      return res.status(403).json({
+        success: false,
+        error: `Forbidden: User with role '${userRole || 'ANONYMOUS'}' is not authorized to initiate PayPal orders.`,
+        code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
+    const { planId } = req.body;
     if (!planId) {
       return res.status(400).json({ success: false, error: 'Missing required field: planId. An explicitly approved purchase plan is required.' });
     }
 
+    const actor = req.user?.name || 'Procurement Manager';
     const result = await paypalService.createOrder(planId, actor);
     res.status(201).json({
       success: true,
       orderId: result.orderId,
       approvalUrl: result.approvalUrl,
       amount: result.amount,
-      currency: result.currency
+      currency: result.currency,
+      isMock: result.isMock
     });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -56,8 +77,17 @@ router.post('/create-order', async (req: Request, res: Response) => {
  */
 router.post('/orders/:id/capture', async (req: Request, res: Response) => {
   try {
+    const userRole = req.user?.role;
+    if (userRole !== 'LEAD_APPROVER' && userRole !== 'TREASURY') {
+      return res.status(403).json({
+        success: false,
+        error: `Forbidden: User with role '${userRole || 'ANONYMOUS'}' is not authorized to execute PayPal payment captures. Only LEAD_APPROVER or TREASURY roles are permitted.`,
+        code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
     const { id } = req.params;
-    const { actor = 'Procurement Manager' } = req.body;
+    const actor = req.user?.name || 'Procurement Manager';
 
     const result = await paypalService.captureOrder(id, actor);
     res.json({
@@ -75,18 +105,29 @@ router.post('/orders/:id/capture', async (req: Request, res: Response) => {
  */
 router.post('/capture-order', async (req: Request, res: Response) => {
   try {
+    const userRole = req.user?.role;
+    if (userRole !== 'LEAD_APPROVER' && userRole !== 'TREASURY') {
+      return res.status(403).json({
+        success: false,
+        error: `Forbidden: User with role '${userRole || 'ANONYMOUS'}' is not authorized to execute payment captures.`,
+        code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
     const { orderId } = req.body;
     if (!orderId) {
       return res.status(400).json({ success: false, error: 'Missing required field: orderId' });
     }
 
-    const result = await paypalService.captureOrder(orderId);
+    const actor = req.user?.name || 'Procurement Manager';
+    const result = await paypalService.captureOrder(orderId, actor);
     res.json({
       success: true,
       captureId: result.captureId,
       orderId: result.orderId,
       status: result.status,
-      amount: result.amount
+      amount: result.amount,
+      isMock: result.isMock
     });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -131,7 +172,7 @@ router.get('/payments/:id/status', async (req: Request, res: Response) => {
  * GET /api/payments/history (and /api/payments)
  * Retrieve payment transaction ledger
  */
-router.get('/payments/history', async (req: Request, res: Response) => {
+router.get(['/payments/history', '/payments'], async (req: Request, res: Response) => {
   try {
     const payments = await db.getPayments();
     res.json({
@@ -151,10 +192,10 @@ router.get('/payments/history', async (req: Request, res: Response) => {
 router.post('/webhook', async (req: Request, res: Response) => {
   try {
     const event = req.body;
-    const result = await paypalService.processWebhook(event);
+    const result = await paypalService.processWebhook(req.headers, event);
     res.json({ success: true, ...result });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

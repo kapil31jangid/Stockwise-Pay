@@ -3,7 +3,7 @@
 **Date:** November 7, 2026  
 **Project:** StockWise Pay (PayPal AI Hackathon 2026)  
 **Target Repository:** [github.com/kapil31jangid/Stockwise-Pay](https://github.com/kapil31jangid/Stockwise-Pay)  
-**Audit Scope:** Full-Stack Architecture, Algorithmic Modules, REST APIs, Security, Database Persistence, PayPal Orders v2 Sandbox, Testing Coverage, Deployment Readiness.
+**Audit Scope:** Full-Stack Architecture, Algorithmic Modules, REST APIs, Cryptographic Security & RBAC, Database Persistence & Atomicity, PayPal Orders v2 Sandbox, Concurrency Locks, Testing Coverage, Deployment Readiness.
 
 ---
 
@@ -12,18 +12,19 @@
 StockWise Pay is an AI-assisted, budget-aware replenishment and checkout platform for independent electronics retailers. It integrates inventory demand forecasting (EMA), multi-criteria supplier evaluation, knapsack-based budget optimization, version-locked managerial approvals, and server-side PayPal Sandbox Orders v2 capture.
 
 - **Overall Project Readiness:** **READY FOR SANDBOX DEMONSTRATION ONLY**  
-  The full end-to-end procurement and payment pipeline is operational, tested, and reproducible. All 43 automated unit, integration, and security tests pass across the three core modules (`intelligence`, `supplier-intelligence`, `backend`). Frontend compiles cleanly with static page pre-rendering and edge middleware redirect guards.
+  The full end-to-end procurement and payment pipeline is operational, tested, and reproducible. All **49 automated unit, integration, and security tests** pass across all three core modules (`intelligence`, `supplier-intelligence`, `backend`). Frontend compiles cleanly with static page pre-rendering and edge middleware redirect guards.
 - **Major Strengths:**
   1. **Strict Version-Locked Approval Gate:** Modifying any plan item, quantity, or budget immediately increments the plan version and invalidates prior approvals. Unapproved or modified plans strictly cannot generate PayPal orders (`400 Bad Request`).
-  2. **Authoritative Server-Side Financial Totals:** All payment amounts, volume discounts (5% over \$500), and logistics fees (free shipping over \$1,000) are computed server-side. The browser cannot manipulate transaction amounts.
-  3. **Zero "Free" Unprotected APIs:** Edge middleware forces unauthenticated frontend visitors directly to `/login`. Central backend middleware (`requireAuth`) rejects all unauthenticated API requests to business routes with `401 Unauthorized`.
-  4. **PostgreSQL / Supabase Persistence:** Dual-engine architecture connects to Supabase/PostgreSQL with automatic migration support and strict non-silent fallback handling in production.
+  2. **Cryptographic JWT Authentication & RBAC:** Tokens are HMAC-SHA256 signed using Node.js `crypto` with `timingSafeEqual` constant-time verification. Arbitrary self-registration is strictly rejected (`401 Invalid Credentials`). Role permissions (`requireRole`, `requirePermission`) forbid unauthorized actors (e.g., Buyer role cannot approve plans or execute PayPal captures).
+  3. **Authoritative Server-Side Financial Totals & Concurrency Locks:** All payment amounts, volume discounts, and logistics fees are computed server-side. In-flight PayPal captures are protected against duplicate/concurrent execution via an in-memory lock (`activeCaptures`) and idempotent state verification.
+  4. **PostgreSQL / Supabase Persistence & Atomic Transactions:** Dual-engine architecture connects to Supabase/PostgreSQL with startup verification (`verifyConnection()`). Multi-table payment capture is executed within a database transaction locking payments, budget spending, plan status, and immutable audit logs.
+  5. **Zero "Free" Unprotected APIs:** Edge middleware forces unauthenticated frontend visitors directly to `/login`. Central backend middleware (`requireAuth`) rejects all unauthenticated API requests to business routes with `401 Unauthorized`.
 - **Critical Blockers for Live Production (vs Sandbox Demo):**
   1. *PayPal Live Credentials:* Current deployment uses PayPal Sandbox API credentials. Production deployment requires live PayPal app credentials and verified merchant account.
-  2. *Live Webhook Listener:* Webhook verification endpoint exists but requires a public HTTPS domain to receive asynchronous PayPal IPN events.
+  2. *Live Webhook Listener:* Webhook verification endpoint exists with certificate origin checks and duplicate replay detection, but requires a public HTTPS domain to receive asynchronous PayPal IPN events.
 - **Recommended Next Steps:**
-  1. Register public domain on Vercel/Railway with SSL for webhook reception.
-  2. Switch `PAYPAL_API_BASE` from `https://api-m.sandbox.paypal.com` to `https://api-m.paypal.com` for production merchant onboarding.
+  1. Deploy frontend and backend to Vercel/Railway with SSL for public webhook reception.
+  2. Switch `PAYPAL_API_BASE` from `https://api-m.sandbox.paypal.com` to `https://api-m.paypal.com` when onboarding a live production business account.
 
 ---
 
@@ -43,26 +44,23 @@ Stockwise-Pay/
 │   └── package.json
 ├── backend/                    [Member 3: Express API, DB & PayPal Orders v2]
 │   ├── src/
-│   │   ├── index.ts            - Express server, CORS, route mounting, global error handler
-│   │   ├── middleware/auth.ts  - requireAuth token validation (blocks unauthenticated traffic)
-│   │   ├── routes/             - 7 API modules (inventory, suppliers, plans, paypal, agent, budget, auth, audit)
-│   │   ├── services/           - paypal.ts (Orders v2 API), agent.ts (6-tool orchestration)
-│   │   └── db/                 - Supabase/PostgreSQL pool + local store, migrations, seedData
-│   ├── tests/api.test.ts       - 10 integration and security tests (All Passing)
+│   │   ├── index.ts            - Express server, CORS, route mounting, DB startup verification
+│   │   ├── middleware/auth.ts  - HMAC-SHA256 JWT verification, token revocation, RBAC guards
+│   │   ├── routes/             - 8 API modules (inventory, suppliers, plans, paypal, agent, budget, auth, audit)
+│   │   ├── services/           - paypal.ts (Orders v2 API, concurrency lock, webhook validation)
+│   │   │                         agent.ts (6-tool orchestration, grounded explanations)
+│   │   └── db/                 - Supabase/PostgreSQL pool, migrations, atomic payment transactions
+│   ├── tests/api.test.ts       - 29 integration and security tests (All Passing)
 │   └── package.json
 └── frontend/                   [Member 1: Next.js 14 App Router UI]
     ├── src/
     │   ├── app/                - Dashboard (/), /inventory, /suppliers, /planner, /recommendations, /payments, /login
     │   ├── components/         - DashboardLayout, Navbar, Sidebar, AuthModal, UI Badges/Modals
-    │   ├── context/            - AuthContext (cookie + localStorage sync, 3 demo personas)
+    │   ├── context/            - AuthContext (JWT cookie & storage sync, secure logout revocation)
     │   ├── middleware.ts       - Edge redirect guard (forces unauthenticated traffic to /login)
-    │   └── services/api.ts     - Typed API client with auto-injected Bearer tokens & 401 interceptor
+    │   └── services/api.ts     - Typed API client with auto-injected Bearer tokens, authoritative queries
     └── package.json
 ```
-
-### Documentation Discrepancies Resolved
-- Root `package.json` was added to unify cross-module testing (`npm test` runs intelligence, suppliers, and backend tests in sequence).
-- Local persistence file `backend/data/stockwise-store.json` was added to `.gitignore` to prevent committing runtime changes into source control.
 
 ---
 
@@ -71,10 +69,11 @@ Stockwise-Pay/
 ### Member 1 — Frontend Development
 - **Status:** Complete & Verified.
 - **Key Deliverables:** Next.js 14 App Router, dynamic navigation, responsive dark/light layouts, CSV import modal with live client-side validation, interactive supplier comparison matrix, purchase planner with real-time budget headroom indicators, PayPal sandbox checkout with receipt modal, login screen with 1-click demo personas.
-- **Audit Checks:**
-  - Zero hardcoded metrics on dashboard: total inventory value, retail potential, active plans, and spend pace are dynamically aggregated from live database records.
-  - Edge middleware forces unauthenticated traffic to `/login` with zero UI flash.
-  - Safe numeric formatting: all `.toFixed(2)` and runway calculations are guarded against `undefined` and `NaN`.
+- **Second-Pass Remediation:**
+  - Removed silent `localStorage` fallback when `NEXT_PUBLIC_API_BASE_URL` is configured.
+  - Client no longer self-declares plan status or payment completion; authoritative server state is re-fetched after each lifecycle action.
+  - Implemented 2-phase PayPal checkout: opens PayPal popup/redirect for buyer authorization, followed by confirmed server-side capture.
+  - Display separate visual indicators for Live Sandbox vs Dev Simulator transactions.
 
 ### Member 2 — Inventory Analysis & Demand Forecasting
 - **Status:** Complete & Verified (7/7 tests passing).
@@ -88,14 +87,18 @@ Stockwise-Pay/
   - Recommended replenishment: $\max(0, \text{targetStock} - \text{currentStock})$.
 
 ### Member 3 — Backend, Database & PayPal Integration
-- **Status:** Complete & Verified (10/10 tests passing).
+- **Status:** Complete & Verified (29/29 tests passing).
 - **Key Deliverables:**
   - RESTful Express server with strict route validation.
+  - Cryptographic HMAC-SHA256 JWT tokens with `timingSafeEqual` verification and token revocation list on logout.
+  - Server-side RBAC: `requireRole(['LEAD_APPROVER', 'TREASURY'])` protects approvals and PayPal payments; actor identities derived directly from verified session.
   - PayPal Orders v2 integration (`/v2/checkout/orders` and `/v2/checkout/orders/:id/capture`).
   - Approval enforcement: unapproved plans cannot create PayPal orders (`400 Bad Request`).
-  - Idempotent capture: re-capturing a completed order returns existing verified capture record without re-charging.
+  - Idempotent capture & concurrency lock: in-flight captures are guarded against race conditions; completed captures return stored record.
+  - Webhook security: certificate origin validation (`api.sandbox.paypal.com` or `api.paypal.com`) and replay duplicate detection.
   - Supabase/PostgreSQL schema with 12 relational tables, transactions, foreign keys, and indexes.
-  - Security middleware: non-silent production database failure handling, requireAuth token verification.
+  - Database startup verification (`verifyConnection()`) failing fast in production if DB is unreachable.
+  - Atomic payment transaction (`executePaymentCaptureTransaction`) updating payment, plan, budget, and audit log atomically with row-level locks.
 
 ### Member 4 — Supplier Comparison, Budget Optimization & AI Agent
 - **Status:** Complete & Verified (13/13 tests passing).
@@ -107,91 +110,38 @@ Stockwise-Pay/
 
 ---
 
-## D. Endpoint-by-Endpoint API Audit Table
+## D. Security & RBAC Matrix
 
-| # | Method | Endpoint | Implementation File | Auth Required | Validation | Test Status | Notes / Findings |
-|---|---|---|---|---|---|---|---|
-| 1 | `GET` | `/api/health` | `backend/src/index.ts` | No (Public) | Schema output | **PASS** | Returns service status, env, and PayPal mode |
-| 2 | `POST` | `/api/auth/login` | `backend/src/routes/auth.ts` | No (Public) | Email matching | **PASS** | Issues Bearer token & creates audit record |
-| 3 | `POST` | `/api/auth/logout` | `backend/src/routes/auth.ts` | Yes | Token | **PASS** | Records audit logout log |
-| 4 | `GET` | `/api/auth/me` | `backend/src/routes/auth.ts` | Yes | Token | **PASS** | Returns authenticated user profile |
-| 5 | `GET` | `/api/inventory` | `backend/src/routes/inventory.ts` | Yes | Token | **PASS** | Returns products with dynamic risk indicators |
-| 6 | `GET` | `/api/inventory/analysis` | `backend/src/routes/inventory.ts` | Yes | Token | **PASS** | Full Member 2 demand report & ROP |
-| 7 | `GET` | `/api/inventory/:sku` | `backend/src/routes/inventory.ts` | Yes | SKU param | **PASS** | Returns product + supplier offers |
-| 8 | `POST` | `/api/inventory` | `backend/src/routes/inventory.ts` | Yes | Body validation | **PASS** | Creates single product, audits action |
-| 9 | `POST` | `/api/inventory/batch` | `backend/src/routes/inventory.ts` | Yes | Array validation | **PASS** | Bulk SKU imports |
-| 10 | `POST` | `/api/inventory/import` | `backend/src/routes/inventory.ts` | Yes | Multipart/CSV | **PASS** | Parses CSV, validates headers & stock values |
-| 11 | `PUT` | `/api/inventory/:sku` | `backend/src/routes/inventory.ts` | Yes | SKU param | **PASS** | Updates stock or unit pricing |
-| 12 | `DELETE` | `/api/inventory/:sku` | `backend/src/routes/inventory.ts` | Yes | SKU param | **PASS** | Deletes SKU from catalog |
-| 13 | `GET` | `/api/suppliers` | `backend/src/routes/suppliers.ts` | Yes | Token | **PASS** | Lists vendors, ratings, lead times |
-| 14 | `GET` | `/api/suppliers/offers` | `backend/src/routes/suppliers.ts` | Yes | Token | **PASS** | Catalog of all wholesale quotations |
-| 15 | `GET` | `/api/suppliers/compare/:sku` | `backend/src/routes/suppliers.ts` | Yes | SKU + query | **PASS** | Multi-criteria scoring across vendors |
-| 16 | `POST` | `/api/plans/generate` | `backend/src/routes/plans.ts` | Yes | Budget validation | **PASS** | Generates budget-constrained restock plan |
-| 17 | `GET` | `/api/plans` | `backend/src/routes/plans.ts` | Yes | Token | **PASS** | Lists purchase plans with totals |
-| 18 | `GET` | `/api/plans/:id` | `backend/src/routes/plans.ts` | Yes | ID param | **PASS** | Returns specific plan + approvals |
-| 19 | `PUT` | `/api/plans/:id` | `backend/src/routes/plans.ts` | Yes | Body validation | **PASS** | Updates plan lines |
-| 20 | `POST` | `/api/plans/:id/recalculate` | `backend/src/routes/plans.ts` | Yes | Budget validation | **PASS** | Bumps version, invalidates prior approval |
-| 21 | `POST` | `/api/plans/:id/approve` | `backend/src/routes/plans.ts` | Yes | Role validation | **PASS** | Explicit human approval of version |
-| 22 | `POST` | `/api/plans/:id/reject` | `backend/src/routes/plans.ts` | Yes | Reason string | **PASS** | Sets plan status to rejected |
-| 23 | `GET` | `/api/plans/:id/explanation` | `backend/src/routes/plans.ts` | Yes | ID param | **PASS** | Natural-language auditable rationale |
-| 24 | `GET` | `/api/plans/:id/versions` | `backend/src/routes/plans.ts` | Yes | ID param | **PASS** | Audit trail of previous version snapshots |
-| 25 | `POST` | `/api/paypal/orders` | `backend/src/routes/paypal.ts` | Yes | Plan approval check | **PASS** | Creates PayPal Orders v2 transaction |
-| 26 | `POST` | `/api/paypal/orders/:id/capture` | `backend/src/routes/paypal.ts` | Yes | ID param | **PASS** | Captures payment & marks plan as paid |
-| 27 | `GET` | `/api/paypal/payments/:id/status`| `backend/src/routes/paypal.ts` | Yes | ID param | **PASS** | Queries verified stored payment status |
-| 28 | `POST` | `/api/paypal/webhook` | `backend/src/routes/paypal.ts` | Yes | Signature | **PASS** | Processes PayPal webhook notifications |
-| 29 | `GET` | `/api/agent` | `backend/src/routes/agent.ts` | Yes | Token | **PASS** | Generates prioritized AI restock cards |
-| 30 | `POST` | `/api/agent/analyze` | `backend/src/routes/agent.ts` | Yes | Prompt validation | **PASS** | Full 6-tool analytical orchestration run |
-| 31 | `POST` | `/api/agent/simulate` | `backend/src/routes/agent.ts` | Yes | Budget validation | **PASS** | Simulates alternate purchasing budgets |
-| 32 | `GET` | `/api/agent/runs/:id` | `backend/src/routes/agent.ts` | Yes | ID param | **PASS** | Retrieves historical agent run record |
-| 33 | `GET` | `/api/budget` | `backend/src/routes/budget.ts` | Yes | Token | **PASS** | Returns active monthly budget & spend |
-| 34 | `PATCH` | `/api/budget` | `backend/src/routes/budget.ts` | Yes | Budget validation | **PASS** | Updates monthly budget cap |
-| 35 | `GET` | `/api/audit-logs` | `backend/src/routes/audit.ts` | Yes | Token | **PASS** | Read-only compliance audit trail |
+| Persona | Role | Permissions | Can Approve Plans? | Can Execute Payments? | Can Edit Budget? |
+|---|---|---|:---:|:---:|:---:|
+| **Marcus Vance** | `LEAD_APPROVER` | `PLAN_APPROVE`, `PAYMENT_EXECUTE`, `SUPPLIERS_COMPARE` | **YES** | **YES** | NO |
+| **Elena Rostova** | `BUYER` | `SUPPLIERS_COMPARE`, `PLAN_GENERATE`, `INVENTORY_VIEW` | **NO** (403) | **NO** (403) | NO |
+| **David Chen** | `TREASURY` | `BUDGET_EDIT`, `PAYMENT_AUDIT`, `PAYMENT_EXECUTE` | **YES** | **YES** | **YES** |
 
 ---
 
-## E. Security Audit
-
-1. **Authentication:**
-   - Client sessions sync via `stockwise_token` cookie and `localStorage`.
-   - Backend requires `Authorization: Bearer <token>` or `x-api-key` on all business routes.
-   - Unauthenticated requests are rejected with `401 Unauthorized`.
-2. **Authorization & Role-Based Access:**
-   - 3 authenticated personas modeled:
-     - **Marcus Vance** (Inventory Lead): Approver role (`PLAN_APPROVE`, `PAYMENT_EXECUTE`).
-     - **Elena Rostova** (Procurement Specialist): Buyer role (`SUPPLIERS_COMPARE`, `PLAN_GENERATE`).
-     - **David Chen** (CFO): Treasury role (`BUDGET_EDIT`, `PAYMENT_AUDIT`).
-3. **Database Security:**
-   - Parameterized SQL queries (`$1, $2, ...`) used on all operations—zero string concatenation or SQL injection vectors.
-   - Non-silent failure in production: PostgreSQL pool errors throw fatal exceptions rather than silently corrupting data into fallback JSON.
-4. **Payment Security:**
-   - Transaction amounts are computed exclusively server-side.
-   - Double-capture prevention: capturing an already-completed order is idempotent and returns the existing capture.
-   - Unapproved plans or plans modified after approval are rejected with `400 Bad Request`.
-5. **Secret Hygiene:**
-   - Credentials configured via `.env` / environment variables.
-   - `.gitignore` configured to ignore `.env`, `.env.local`, and `backend/data/`.
-
----
-
-## F. Testing Report
+## E. Testing Report
 
 ```
 Test Suite Execution Results:
 =======================================================
 1. intelligence Module:
    Command: npm --prefix intelligence test
-   Result: 7 tests passed, 0 failed, 0 skipped (duration: ~208ms)
+   Result: 7 tests passed, 0 failed, 0 skipped (duration: ~222ms)
    Coverage: EMA forecasting, stockout risk bounds, demand analysis
 
 2. supplier-intelligence Module:
    Command: npm --prefix supplier-intelligence test
-   Result: 13 tests passed, 0 failed, 0 skipped (duration: ~237ms)
+   Result: 13 tests passed, 0 failed, 0 skipped (duration: ~266ms)
    Coverage: compare_suppliers, optimize_budget, simulate_purchase_plan, explain_purchase_plan
 
 3. backend Module:
    Command: npm --prefix backend test
-   Result: 23 tests passed, 0 failed, 0 skipped (duration: ~43s)
-   Coverage: Health, auth enforcement (missing/invalid/malformed tokens),
+   Result: 29 tests passed, 0 failed, 0 skipped (duration: ~53s)
+   Coverage: Health, auth enforcement (missing/invalid/malformed/forged tokens),
+             arbitrary login rejection, registered persona login with HMAC JWT,
+             RBAC buyer approval rejection (Elena 403), RBAC buyer payment rejection (Elena 403),
+             webhook security (invalid cert origin & duplicate rejection),
              inventory stockout indicators, demand analysis, supplier comparison,
              budget-constrained plan generation, unapproved plan checkout gate,
              rejection lifecycle, empty-plan approval rejection, plan 404,
@@ -200,13 +150,13 @@ Test Suite Execution Results:
              CSV import validations (valid, empty, missing headers, no-body),
              AI agent full analysis & simulation
 
-Total Automated Tests: 43 PASSED / 0 FAILED (100% Pass Rate)
+Total Automated Tests: 49 PASSED / 0 FAILED (100% Pass Rate)
 =======================================================
 ```
 
 ---
 
-## G. Pre-Deployment Checklist
+## F. Pre-Deployment Checklist
 
 | Area | Item | Status | Verification Evidence |
 |---|---|---|---|
@@ -216,43 +166,49 @@ Total Automated Tests: 43 PASSED / 0 FAILED (100% Pass Rate)
 | **Frontend** | Responsive design on mobile / desktop | **PASS** | Tailwind responsive layout verified on mobile drawer & desktop sidebar |
 | **Backend** | Express API server operational | **PASS** | Port 5000 active, `/api/health` returns HTTP 200 |
 | **Backend** | API authentication enforcement | **PASS** | `/api/inventory` returns HTTP 401 without Bearer token; 200 with Bearer |
+| **Backend** | Cryptographic JWT verification | **PASS** | HMAC-SHA256 constant-time check rejects tampered tokens |
+| **Backend** | RBAC permission enforcement | **PASS** | Elena (Buyer) rejected with 403 on `/approve` and `/paypal/orders` |
 | **Backend** | Approval gate on checkout | **PASS** | Unapproved plan rejects PayPal order creation with HTTP 400 |
 | **Backend** | Plan invalidation on budget edit | **PASS** | Recalculating plan increments version (v1 $\to$ v2) and resets status |
-| **Database** | PostgreSQL / Supabase integration | **PASS** | Connection active via `DATABASE_URL` with 12 relational tables |
+| **Database** | PostgreSQL / Supabase integration | **PASS** | Connection verified on startup via `verifyConnection()` |
 | **Database** | Non-silent fallback in production | **PASS** | `handlePgError` throws fatal exceptions in production |
+| **Database** | Atomic payment transaction | **PASS** | `executePaymentCaptureTransaction` locks rows & updates payment, budget, plan, audit |
 | **PayPal** | Orders v2 Order Creation | **PASS** | Server-side calculated totals, PayPal approval URLs generated |
-| **PayPal** | Idempotent Capture | **PASS** | Duplicate capture call returns stored transaction without re-execution |
+| **PayPal** | Concurrency Lock | **PASS** | `activeCaptures` prevents duplicate concurrent capture attempts |
+| **PayPal** | Webhook Security | **PASS** | Origin validation & duplicate event protection active |
 | **AI Agent** | 6-Tool analytical orchestration | **PASS** | `runFullAnalysis` executes inventory $\to$ optimize $\to$ explain tools |
 
 ---
 
-## H. Remediation Summary
+## G. Second-Pass Remediation Details
 
-1. **Auto-Approval Bypass Removed in `routes/paypal.ts`**:
-   - *Issue:* Legacy `/api/paypal/create-order` auto-approved unapproved plans if no ID was passed.
-   - *Fix:* Removed automatic approval logic. Plan ID is now strictly required, and plan must have explicit manager approval.
-2. **Silent Production Fallback Removed in `db/index.ts`**:
-   - *Issue:* Database pool errors silently fell back to local JSON store.
-   - *Fix:* Added `handlePgError` which throws fatal production errors when `NODE_ENV === 'production'`.
-3. **Buyer Approval Enforcement in `services/paypal.ts`**:
-   - *Issue:* `ORDER_NOT_APPROVED` automatically captured orders even outside test mode.
-   - *Fix:* Restricted automated demo capture strictly to `NODE_ENV === 'test'`. Non-test environments throw an explicit error requiring buyer approval in PayPal window.
-4. **Git Hygiene in `.gitignore`**:
-   - *Issue:* `backend/data/` was untracked and risked checking in local state.
-   - *Fix:* Added `backend/data/`, `data/`, and database patterns to `.gitignore`.
-5. **Next.js Edge Middleware (`middleware.ts`)**:
-   - *Issue:* Unauthenticated users briefly loaded the dashboard before client-side hydration redirected them.
-   - *Fix:* Edge middleware intercepts requests before rendering, returning instant HTTP 307 redirect to `/login`.
-6. **Forecasting 14-Day Minimum Sales History Constraint Enforced in `inventory.ts` & `agent.ts`**:
-   - *Issue:* Newly imported products or CSV batches with <14 sales records crashed Member 2's demand forecasting engine with `Error: At least 14 valid daily sales records are required`.
-   - *Fix:* Aligned CSV default generation and `buildInventoryProducts()` in `agent.ts` to guarantee $\ge$ 14 valid daily sales records, preventing downstream mathematical failure during optimization and simulation.
+1. **Authentication & Session Security:**
+   - Replaced arbitrary login and prefix-based tokens with HMAC-SHA256 cryptographic JWT generation and constant-time verification (`crypto.timingSafeEqual`).
+   - Added user registry (`REGISTERED_USERS`) mapping known credentials. Unknown users receive `401 INVALID_CREDENTIALS`.
+   - Added token revocation blacklist (`revokedTokens`) so logged-out tokens cannot be reused.
+   - Enforced server-side RBAC: `requireRole(['LEAD_APPROVER', 'TREASURY'])` on `/approve`, `/reject`, and `/paypal/orders`.
+   - Actor and approver identities are taken strictly from verified `req.user.name` rather than client request payload.
+
+2. **PayPal Transaction Security:**
+   - In-memory concurrency lock (`activeCaptures`) prevents duplicate simultaneous capture requests for the same order.
+   - Captured amounts are verified against approved plan version and total price.
+   - OAuth failure throws an explicit error instead of silently switching to simulated mode.
+   - Webhook processing validates certificate URL domain (`api.sandbox.paypal.com` or `api.paypal.com`) and rejects duplicate transmissions.
+
+3. **Database Integrity & Atomicity:**
+   - Added `verifyConnection()` called during server startup to fail fast if PostgreSQL is unreachable.
+   - Implemented `executePaymentCaptureTransaction()` which uses PostgreSQL transaction (`BEGIN ... COMMIT`) with `FOR UPDATE` row-level locking on budget and purchase plan, ensuring budget headroom is never exceeded.
+
+4. **Frontend Hardening:**
+   - Removed client-side authoritative decisions; all approvals and payment captures query the server for definitive state.
+   - Removed silent local fallback when API is active.
+   - Integrated two-step PayPal buyer authorization modal and separated live Sandbox vs Dev simulator status badges.
 
 ---
 
-## I. Final Deployment Decision
+## H. Final Deployment Decision
 
 ### **READY FOR SANDBOX DEMONSTRATION ONLY**
 
 **Justification:**
 StockWise Pay has passed all structural, algorithmic, security, database, and integration requirements. The system is 100% stable, fully reproducible, and ready for live hackathon jury evaluation and demo video recording using the live PayPal Sandbox API and PostgreSQL. Live production rollout requires only setting live PayPal merchant credentials and deploying to a public HTTPS domain for inbound webhooks.
-

@@ -10,6 +10,7 @@ import budgetRoutes from './routes/budget.js';
 import authRoutes from './routes/auth.js';
 import auditRoutes from './routes/audit.js';
 import { requireAuth } from './middleware/auth.js';
+import { db } from './db/index.js';
 
 dotenv.config();
 
@@ -90,13 +91,18 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 });
 
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`=======================================================`);
-    console.log(`⚡ StockWise Pay API Server running on port ${PORT}`);
-    console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`📦 Database store initialized and ready`);
-    console.log(`💳 PayPal mode: ${process.env.PAYPAL_CLIENT_ID ? 'Configured Sandbox' : 'Sandbox Simulator (zero-setup)'}`);
-    console.log(`=======================================================`);
+  db.verifyConnection().then(() => {
+    app.listen(PORT, () => {
+      console.log(`=======================================================`);
+      console.log(`⚡ StockWise Pay API Server running on port ${PORT}`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+      console.log(`📦 Database store initialized and ready`);
+      console.log(`💳 PayPal mode: ${process.env.PAYPAL_CLIENT_ID ? 'Configured Sandbox' : 'Sandbox Simulator (zero-setup)'}`);
+      console.log(`=======================================================`);
+    });
+  }).catch((err: any) => {
+    console.error('FATAL: Database startup check failed:', err);
+    process.exit(1);
   });
 }
 

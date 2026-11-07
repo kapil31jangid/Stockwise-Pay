@@ -32,14 +32,30 @@ export default function PaymentsPage() {
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentRecord | null>(null);
 
   // PayPal Sandbox flow states
-  const [paymentStep, setPaymentStep] = useState<"idle" | "authorizing" | "capturing" | "success">(
+  const [paymentStep, setPaymentStep] = useState<"idle" | "authorizing" | "ready_to_capture" | "capturing" | "success">(
     "idle"
   );
+  const [pendingOrder, setPendingOrder] = useState<{
+    orderId: string;
+    approvalUrl: string;
+    isMock?: boolean;
+  } | null>(null);
   const [lastPaymentResult, setLastPaymentResult] = useState<PaymentRecord | null>(null);
   const [currency, setCurrency] = useState("USD");
 
   useEffect(() => {
     loadData();
+
+    // Check return parameters from PayPal Sandbox redirect
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search);
+      const statusParam = urlParams.get("status");
+      if (statusParam === "cancelled") {
+        setCheckoutError("PayPal checkout was cancelled by the buyer.");
+      } else if (statusParam === "authorized") {
+        setPaymentStep("ready_to_capture");
+      }
+    }
   }, []);
 
   const loadData = async () => {
@@ -56,8 +72,9 @@ export default function PaymentsPage() {
         const approved = validPlans.find(p => p.status === 'approved');
         setActivePlan(approved || validPlans[0]);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error loading payment data:", err);
+      setCheckoutError(err.message || "Failed to load authoritative payment records from backend.");
     }
   };
 
@@ -67,19 +84,17 @@ export default function PaymentsPage() {
     setIsApproving(true);
     setCheckoutError(null);
     try {
-      const approver = user ? `${user.name} (${user.role})` : "Marcus Vance (Inventory Lead)";
+      const approverName = user?.name || "Marcus Vance";
+      const approverRole = user?.role || "Inventory Lead";
       if (api.approvePlan) {
-        await api.approvePlan(activePlan.id, user?.name || "Marcus Vance", "Fast-track approved for PayPal settlement");
+        await api.approvePlan(activePlan.id, approverName, "Fast-track approved for PayPal settlement", approverRole);
       }
-      const updated: PurchasePlan = {
-        ...activePlan,
-        status: "approved",
-        approvedAt: new Date().toISOString(),
-        approvedBy: approver,
-      };
-      await api.savePurchasePlan(updated);
-      setActivePlan(updated);
-      setPlans((prev) => prev.map((p) => (p.id === activePlan.id ? updated : p)));
+      // Authoritatively refetch the updated plan from the server
+      const refreshedPlan = await api.getPurchasePlan(activePlan.id);
+      if (refreshedPlan) {
+        setActivePlan(refreshedPlan);
+        setPlans((prev) => prev.map((p) => (p.id === activePlan.id ? refreshedPlan : p)));
+      }
     } catch (err: any) {
       setCheckoutError(err.message || "Failed to approve plan");
     } finally {
@@ -87,7 +102,7 @@ export default function PaymentsPage() {
     }
   };
 
-  // Simulate PayPal Sandbox Two-Phase Flow (create-order -> capture-order)
+  // Step 1: Create Order & Request Buyer Authorization
   const handleTriggerPayPalCheckout = async () => {
     if (!activePlan) return;
     setIsLoading(true);
@@ -107,45 +122,49 @@ export default function PaymentsPage() {
         })),
       });
 
-      // Simulation delay for sandbox modal window
-      setTimeout(async () => {
-        try {
-          setPaymentStep("capturing");
+      setPendingOrder(order);
+      setPaymentStep("ready_to_capture");
 
-          // 2. Capture Order on backend
-          const record = await api.capturePayPalOrder({
-            orderId: order.orderId,
-            planTitle: activePlan.title || `Restock Plan #${activePlan.id}`,
-            supplierName: (activePlan.items && activePlan.items[0]?.selectedSupplierName) || "VoltCore & Apex Wholesale Consolidated",
-            amount: activePlan.totalAmount ?? 0,
-            currency: currency,
-            itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} electronics SKUs (${activePlan.title || 'Restock'})`,
-          });
-
-          // Update local plan state to paid
-          const paidPlan: PurchasePlan = {
-            ...activePlan,
-            status: "paid",
-          };
-          await api.savePurchasePlan(paidPlan);
-          setActivePlan(paidPlan);
-          setPlans((prev) => prev.map((p) => (p.id === activePlan.id ? paidPlan : p)));
-
-          setPayments((prev) => [record, ...prev]);
-          setLastPaymentResult(record);
-          setPaymentStep("success");
-        } catch (captureErr: any) {
-          console.error("Capture failed:", captureErr);
-          setCheckoutError(captureErr.message || "Failed to capture payment in PayPal Sandbox");
-          setPaymentStep("idle");
-        } finally {
-          setIsLoading(false);
-        }
-      }, 1500);
+      // In real sandbox mode with external approval link, open popup for buyer authorization
+      if (order.approvalUrl && !order.approvalUrl.includes('token=SANDBOX-ORD')) {
+        window.open(order.approvalUrl, '_blank', 'width=600,height=750,noopener,noreferrer');
+      }
     } catch (err: any) {
       console.error("Order creation failed:", err);
       setCheckoutError(err.message || "PayPal Sandbox order creation failed. Ensure plan is approved.");
       setPaymentStep("idle");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Step 2: Confirm Buyer Authorization & Execute Authoritative Capture
+  const handleConfirmAndCapturePayment = async () => {
+    if (!activePlan || !pendingOrder) return;
+    setIsLoading(true);
+    setCheckoutError(null);
+    setPaymentStep("capturing");
+
+    try {
+      const record = await api.capturePayPalOrder({
+        orderId: pendingOrder.orderId,
+        planTitle: activePlan.title || `Restock Plan #${activePlan.id}`,
+        supplierName: (activePlan.items && activePlan.items[0]?.selectedSupplierName) || "VoltCore & Apex Wholesale Consolidated",
+        amount: activePlan.totalAmount ?? 0,
+        currency: currency,
+        itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} electronics SKUs (${activePlan.title || 'Restock'})`,
+      });
+
+      // Fetch fresh authoritative state from backend
+      await loadData();
+      setLastPaymentResult(record);
+      setPaymentStep("success");
+      setPendingOrder(null);
+    } catch (captureErr: any) {
+      console.error("Capture failed:", captureErr);
+      setCheckoutError(captureErr.message || "Failed to capture payment in PayPal Sandbox");
+      setPaymentStep("ready_to_capture");
+    } finally {
       setIsLoading(false);
     }
   };
@@ -431,11 +450,55 @@ export default function PaymentsPage() {
                   Supplier purchase orders have been triggered for automated dispatch.
                 </p>
                 <button
-                  onClick={() => setPaymentStep("idle")}
-                  className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors"
+                  onClick={() => {
+                    setPaymentStep("idle");
+                    setPendingOrder(null);
+                  }}
+                  className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
                 >
                   Done
                 </button>
+              </div>
+            ) : paymentStep === "ready_to_capture" ? (
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 text-blue-900 font-bold text-xs">
+                  <Clock className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>PayPal Sandbox Order: <strong className="font-mono">{pendingOrder?.orderId}</strong></span>
+                </div>
+                <p className="text-[11px] text-blue-800 leading-relaxed">
+                  Please log in and authorize payment using PayPal Sandbox buyer credentials (<strong>buyer-retail@stockwise.test</strong>). Once authorized, capture to settle.
+                </p>
+                <div className="space-y-2 pt-1">
+                  {pendingOrder?.approvalUrl && (
+                    <a
+                      href={pendingOrder.approvalUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2.5 px-3 bg-[#003087] hover:bg-[#00276D] text-white text-xs font-bold rounded-xl text-center flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                    >
+                      <span>Open PayPal Checkout Window ↗</span>
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleConfirmAndCapturePayment}
+                    disabled={isLoading}
+                    className="w-full py-3 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+                  >
+                    {isLoading ? <Clock className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                    <span>Confirm Buyer Authorization & Capture</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentStep("idle");
+                      setPendingOrder(null);
+                    }}
+                    className="w-full py-1.5 text-slate-500 hover:text-slate-800 text-[11px] font-semibold text-center"
+                  >
+                    Cancel Order
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="space-y-3">
@@ -452,7 +515,7 @@ export default function PaymentsPage() {
                   >
                     {paymentStep === "authorizing" ? (
                       <span className="flex items-center gap-2 text-xs font-bold text-slate-900">
-                        <Clock className="w-4 h-4 animate-spin" /> Authorizing in Sandbox...
+                        <Clock className="w-4 h-4 animate-spin" /> Preparing Sandbox Order...
                       </span>
                     ) : paymentStep === "capturing" ? (
                       <span className="flex items-center gap-2 text-xs font-bold text-slate-900">
@@ -544,8 +607,12 @@ export default function PaymentsPage() {
 
                     {/* Method */}
                     <td className="py-3.5 px-4">
-                      <span className="inline-flex items-center gap-1 font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                        {record.method}
+                      <span className={`inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded border text-[11px] ${
+                        record.method?.includes('Simulated')
+                          ? 'text-amber-800 bg-amber-50 border-amber-200'
+                          : 'text-blue-700 bg-blue-50 border-blue-200'
+                      }`}>
+                        {record.method?.includes('Simulated') ? 'Dev Simulator' : 'PayPal Live Sandbox'}
                       </span>
                     </td>
 
@@ -559,7 +626,17 @@ export default function PaymentsPage() {
 
                     {/* Status */}
                     <td className="py-3.5 px-4">
-                      <Badge variant="success" size="sm" dot>
+                      <Badge
+                        variant={
+                          (record.status || '').toLowerCase() === 'completed'
+                            ? 'success'
+                            : (record.status || '').toLowerCase() === 'created' || (record.status || '').toLowerCase() === 'pending'
+                            ? 'warning'
+                            : 'danger'
+                        }
+                        size="sm"
+                        dot
+                      >
                         {(record.status || "COMPLETED").toUpperCase()}
                       </Badge>
                     </td>

@@ -72,35 +72,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     try {
       const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+      const match = typeof document !== "undefined" ? document.cookie.match(/stockwise_token=([^;]+)/) : null;
+      const storedToken = match ? match[1] : (typeof localStorage !== "undefined" ? localStorage.getItem("stockwise_jwt_token") : null);
+
       if (stored && stored !== "logged_out") {
         const parsed = JSON.parse(stored);
-        if (parsed && parsed.id) {
-          const t = `jwt-stockwise-${parsed.id}`;
+        if (parsed && parsed.id && storedToken) {
           setUser(parsed);
-          setToken(t);
-          if (typeof document !== "undefined") {
-            document.cookie = `stockwise_token=${t}; path=/; max-age=86400; SameSite=Lax`;
-          }
+          setToken(storedToken);
         } else {
           setUser(null);
           setToken(null);
-          if (typeof document !== "undefined") {
-            document.cookie = "stockwise_token=; path=/; max-age=0; SameSite=Lax";
-          }
         }
       } else {
         setUser(null);
         setToken(null);
-        if (typeof document !== "undefined") {
-          document.cookie = "stockwise_token=; path=/; max-age=0; SameSite=Lax";
-        }
       }
     } catch {
       setUser(null);
       setToken(null);
-      if (typeof document !== "undefined") {
-        document.cookie = "stockwise_token=; path=/; max-age=0; SameSite=Lax";
-      }
     } finally {
       setIsLoading(false);
     }
@@ -109,67 +99,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email?: string, password?: string): Promise<User> => {
     setIsLoading(true);
     try {
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
-      if (apiBase) {
-        try {
-          const res = await fetch(`${apiBase}/auth/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email, password }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.user) {
-              const u: User = {
-                id: data.user.id || "USR-001",
-                name: data.user.name || "Marcus Vance",
-                email: data.user.email || email || "marcus.vance@stockwisepay.com",
-                role: data.user.role || "Inventory Lead / Approver",
-                department: data.user.department || "Operations & Supply",
-                avatarInitials: data.user.avatarInitials || (data.user.name ? data.user.name.slice(0, 2).toUpperCase() : "MV"),
-                badge: data.user.badge || "AUTHENTICATED",
-                permissions: data.user.permissions || ["INVENTORY_VIEW", "PLAN_GENERATE", "PLAN_APPROVE", "PAYMENT_EXECUTE"],
-              };
-              const authToken = data.token || `jwt-stockwise-${u.id}-${Date.now()}`;
-              setUser(u);
-              setToken(authToken);
-              localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(u));
-              if (typeof document !== "undefined") {
-                document.cookie = `stockwise_token=${authToken}; path=/; max-age=86400; SameSite=Lax`;
-              }
-              setIsAuthModalOpen(false);
-              return u;
-            }
-          }
-        } catch (backendErr) {
-          console.warn("Backend auth call failed, using preset/fallback:", backendErr);
-        }
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      const targetEmail = email || "marcus.vance@stockwisepay.com";
+
+      const res = await fetch(`${apiBase}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: targetEmail, password }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `Login failed (HTTP ${res.status})`);
       }
 
-      // Fallback matching preset
-      const found = PRESET_USERS.find(
-        (u) => u.email.toLowerCase() === (email || "").toLowerCase()
-      );
-      const authenticatedUser: User = found || {
-        id: `USR-${Date.now().toString().slice(-4)}`,
-        name: email ? email.split("@")[0].replace(".", " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "Retail Manager",
-        email: email || "manager@stockwisepay.com",
-        role: "Store Manager",
-        department: "Retail Operations",
-        avatarInitials: (email ? email.slice(0, 2) : "RM").toUpperCase(),
-        badge: "AUTHENTICATED",
-        permissions: ["INVENTORY_VIEW", "PLAN_GENERATE", "PLAN_APPROVE", "PAYMENT_EXECUTE"],
+      const data = await res.json();
+      if (!data.token || !data.user) {
+        throw new Error("Invalid authentication response from server");
+      }
+
+      const u: User = {
+        id: data.user.id,
+        name: data.user.name,
+        email: data.user.email,
+        role: data.user.role,
+        department: data.user.department || "Operations",
+        avatarInitials: data.user.avatarInitials || data.user.name.slice(0, 2).toUpperCase(),
+        badge: data.user.badge || "AUTHENTICATED",
+        permissions: data.user.permissions || [],
       };
 
-      const fallbackToken = `jwt-stockwise-${authenticatedUser.id}-${Date.now()}`;
-      setUser(authenticatedUser);
-      setToken(fallbackToken);
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
+      setUser(u);
+      setToken(data.token);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(u));
+      localStorage.setItem("stockwise_jwt_token", data.token);
+
       if (typeof document !== "undefined") {
-        document.cookie = `stockwise_token=${fallbackToken}; path=/; max-age=86400; SameSite=Lax`;
+        document.cookie = `stockwise_token=${data.token}; path=/; max-age=86400; SameSite=Lax`;
       }
+
       setIsAuthModalOpen(false);
-      return authenticatedUser;
+      return u;
     } finally {
       setIsLoading(false);
     }
@@ -178,21 +148,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchAccount = (userId: string) => {
     const selected = PRESET_USERS.find((u) => u.id === userId);
     if (selected) {
-      const swToken = `jwt-stockwise-${selected.id}-${Date.now()}`;
-      setUser(selected);
-      setToken(swToken);
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(selected));
-      if (typeof document !== "undefined") {
-        document.cookie = `stockwise_token=${swToken}; path=/; max-age=86400; SameSite=Lax`;
-      }
+      login(selected.email).catch((err) => {
+        console.error("Account switch failed:", err);
+      });
     }
   };
 
   const logout = () => {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+    const currentToken = token;
+
+    if (currentToken && apiBase) {
+      fetch(`${apiBase}/auth/logout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${currentToken}`,
+        },
+        body: JSON.stringify({ actor: user?.name || "User" }),
+      }).catch(() => {});
+    }
+
     setUser(null);
     setToken(null);
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, "logged_out");
+      localStorage.removeItem("stockwise_jwt_token");
       if (typeof document !== "undefined") {
         document.cookie = "stockwise_token=; path=/; max-age=0; SameSite=Lax";
       }
