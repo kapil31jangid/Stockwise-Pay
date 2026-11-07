@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { api } from "@/services/api";
 import { AIRecommendation, PurchasePlan } from "@/types";
+import { useAuth } from "@/context/AuthContext";
 
 type SimulationMode = "balanced" | "aggressive" | "conservative";
 
@@ -100,18 +101,24 @@ export default function AIRecommendationsPage() {
     },
   };
 
+  const { user } = useAuth();
+
   // Manager Approve Plan
   const handleConfirmApproval = async () => {
     if (plans.length > 0) {
       const targetPlan = plans[0];
+      const approverName = user ? `${user.name} (${user.role})` : "Marcus Vance (Store Manager)";
       const approvedPlan: PurchasePlan = {
         ...targetPlan,
         status: "approved",
         approvedAt: new Date().toISOString().replace("T", " ").substring(0, 16),
-        approvedBy: "Marcus Vance (Store Manager)",
+        approvedBy: approverName,
         approvalNotes: managerNotes || "Approved as simulated. Fast-tracked to PayPal checkout.",
       };
       await api.savePurchasePlan(approvedPlan);
+      if (api.approvePlan) {
+        await api.approvePlan(targetPlan.id, user?.name || "Marcus Vance", managerNotes);
+      }
       setApprovalStatus("approved");
       setIsApproveModalOpen(false);
       showToast("Purchase Plan APPROVED! Redirecting to PayPal Settlement...");

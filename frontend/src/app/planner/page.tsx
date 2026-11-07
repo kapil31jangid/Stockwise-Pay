@@ -102,7 +102,7 @@ export default function PurchasePlannerPage() {
     if (!sup) return;
 
     // Check if supplier has custom offer price for this product
-    const offer = sup.offers.find((o) => o.productId === targetItem.productId);
+    const offer = (sup.offers || []).find((o) => o.productId === targetItem.productId || o.sku === targetItem.sku);
     const unitCost = offer ? offer.unitPrice : targetItem.unitCost;
     const leadTimeDays = offer ? offer.leadTimeDays : sup.leadTimeDays;
 
@@ -179,9 +179,9 @@ export default function PurchasePlannerPage() {
       recommendedQty: qty,
       selectedQty: qty,
       unitCost: invItem.unitCost,
-      selectedSupplierId: sup.id,
-      selectedSupplierName: sup.name,
-      leadTimeDays: sup.leadTimeDays,
+      selectedSupplierId: sup?.id || "SUP001",
+      selectedSupplierName: sup?.name || "VoltCore Distribution",
+      leadTimeDays: sup?.leadTimeDays || 3,
       subtotal: Number((qty * invItem.unitCost).toFixed(2)),
       isSelected: true,
     };
@@ -227,8 +227,8 @@ export default function PurchasePlannerPage() {
                 Purchase Order Planner
               </h2>
               {currentPlan && (
-                <Badge variant={currentPlan.status === "pending_approval" ? "warning" : "info"} size="sm" dot>
-                  {currentPlan.status.replace("_", " ").toUpperCase()}
+                <Badge variant={(currentPlan.status || 'pending_approval') === "pending_approval" ? "warning" : "info"} size="sm" dot>
+                  {(currentPlan.status || "pending_approval").replace("_", " ").toUpperCase()}
                 </Badge>
               )}
             </div>
@@ -380,7 +380,7 @@ export default function PurchasePlannerPage() {
                     width: `${Math.min(
                       100,
                       Math.round(
-                        ((budget.spentThisMonth + grandTotal) / budget.monthlyBudget) * 100
+                        (((budget?.spentThisMonth ?? 0) + grandTotal) / (budget?.monthlyBudget || 15000)) * 100
                       )
                     )}%`,
                   }}

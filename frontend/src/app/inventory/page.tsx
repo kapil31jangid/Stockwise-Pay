@@ -210,12 +210,16 @@ export default function InventoryPage() {
         return matchesSearch && matchesCategory && matchesStatus;
       })
       .sort((a, b) => {
-        if (sortBy === "stock-asc") return a.currentStock - b.currentStock;
-        if (sortBy === "stock-desc") return b.currentStock - a.currentStock;
-        if (sortBy === "name") return a.name.localeCompare(b.name);
+        if (sortBy === "stock-asc") return (a.currentStock ?? 0) - (b.currentStock ?? 0);
+        if (sortBy === "stock-desc") return (b.currentStock ?? 0) - (a.currentStock ?? 0);
+        if (sortBy === "name") return (a.name || '').localeCompare(b.name || '');
         if (sortBy === "margin") {
-          const marginA = (a.retailPrice - a.unitCost) / a.retailPrice;
-          const marginB = (b.retailPrice - b.unitCost) / b.retailPrice;
+          const rA = a.retailPrice || (a.unitCost ? a.unitCost * 2 : 25);
+          const rB = b.retailPrice || (b.unitCost ? b.unitCost * 2 : 25);
+          const uA = a.unitCost || 10;
+          const uB = b.unitCost || 10;
+          const marginA = rA > 0 ? (rA - uA) / rA : 0;
+          const marginB = rB > 0 ? (rB - uB) / rB : 0;
           return marginB - marginA;
         }
         return 0;
@@ -377,12 +381,13 @@ export default function InventoryPage() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredItems.map((item) => {
-                  const marginPct = Math.round(
-                    ((item.retailPrice - item.unitCost) / item.retailPrice) * 100
-                  );
+                  const rPrice = Number(item.retailPrice ?? (item.unitCost ? item.unitCost * 2 : 25));
+                  const uCost = Number(item.unitCost ?? 10);
+                  const marginPct = rPrice > 0 ? Math.round(((rPrice - uCost) / rPrice) * 100) : 50;
+                  const targetStk = Number(item.targetStock || 50);
                   const stockPct = Math.min(
                     100,
-                    Math.round((item.currentStock / item.targetStock) * 100)
+                    Math.round(((item.currentStock ?? 0) / targetStk) * 100)
                   );
 
                   return (
@@ -442,8 +447,8 @@ export default function InventoryPage() {
                         <div className="font-medium">{item.salesVelocityPerWeek} / wk</div>
                         <div className="text-[10px] text-slate-400">
                           Runway: ~
-                          {item.salesVelocityPerWeek > 0
-                            ? ((item.currentStock / item.salesVelocityPerWeek) * 7).toFixed(1)
+                          {(item.salesVelocityPerWeek ?? 0) > 0
+                            ? (((item.currentStock ?? 0) / item.salesVelocityPerWeek) * 7).toFixed(1)
                             : 0}{" "}
                           days
                         </div>
@@ -452,10 +457,10 @@ export default function InventoryPage() {
                       {/* Cost / Retail */}
                       <td className="py-3.5 px-4">
                         <div className="font-semibold text-slate-900">
-                          ${item.retailPrice.toFixed(2)}
+                          ${rPrice.toFixed(2)}
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          Cost: ${item.unitCost.toFixed(2)}
+                          Cost: ${uCost.toFixed(2)}
                         </div>
                       </td>
 

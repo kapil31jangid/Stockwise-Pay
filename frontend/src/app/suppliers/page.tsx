@@ -38,15 +38,24 @@ export default function SuppliersPage() {
     ]);
     setSuppliers(supData);
     setInventory(invData);
+    if (invData.length > 0) {
+      setSelectedProductId(invData[0].id);
+    }
   };
 
   // Find selected product for comparison matrix
   const selectedProduct = inventory.find((p) => p.id === selectedProductId) || inventory[0];
 
   // Compute offers for the selected product across all suppliers
-  const productOffers = suppliers
+  const productOffers = (suppliers || [])
     .map((sup) => {
-      const offer = sup.offers.find((o) => o.productId === selectedProductId);
+      const offers = Array.isArray(sup.offers) ? sup.offers : [];
+      const offer = offers.find(
+        (o) =>
+          o.productId === selectedProductId ||
+          o.productId === selectedProduct?.id ||
+          (o.sku && selectedProduct?.sku && o.sku.toUpperCase() === selectedProduct.sku.toUpperCase())
+      );
       if (!offer) return null;
       return {
         supplier: sup,
@@ -63,11 +72,13 @@ export default function SuppliersPage() {
     ? Math.min(...productOffers.map((o) => o.offer.leadTimeDays))
     : 0;
 
-  const filteredSuppliers = suppliers.filter(
+  const filteredSuppliers = (suppliers || []).filter(
     (s) =>
-      s.name.toLowerCase().includes(searchSupplier.toLowerCase()) ||
-      s.location.toLowerCase().includes(searchSupplier.toLowerCase()) ||
-      s.categorySpecialties.some((c) => c.toLowerCase().includes(searchSupplier.toLowerCase()))
+      (s.name || "").toLowerCase().includes(searchSupplier.toLowerCase()) ||
+      (s.location || "").toLowerCase().includes(searchSupplier.toLowerCase()) ||
+      (Array.isArray(s.categorySpecialties) ? s.categorySpecialties : []).some((c) =>
+        c.toLowerCase().includes(searchSupplier.toLowerCase())
+      )
   );
 
   return (
@@ -179,18 +190,18 @@ export default function SuppliersPage() {
 
               <div className="flex items-center gap-4 text-slate-600">
                 <span>
-                  Store Retail Price: <strong>${selectedProduct.retailPrice.toFixed(2)}</strong>
+                  Store Retail Price: <strong>${(selectedProduct.retailPrice || (selectedProduct.unitCost ? selectedProduct.unitCost * 2 : 25)).toFixed(2)}</strong>
                 </span>
                 <span>
                   Current Stock:{" "}
                   <strong
                     className={
-                      selectedProduct.currentStock <= selectedProduct.reorderPoint
+                      (selectedProduct.currentStock ?? 0) <= (selectedProduct.reorderPoint ?? 15)
                         ? "text-rose-600"
                         : "text-slate-800"
                     }
                   >
-                    {selectedProduct.currentStock} units
+                    {selectedProduct.currentStock ?? 0} units
                   </strong>
                 </span>
               </div>
@@ -216,13 +227,10 @@ export default function SuppliersPage() {
                 {productOffers.map(({ supplier, offer }) => {
                   const isBestPrice = offer.unitPrice === lowestPrice;
                   const isFastest = offer.leadTimeDays === fastestDelivery;
-                  const unitMargin = selectedProduct
-                    ? Math.round(
-                        ((selectedProduct.retailPrice - offer.unitPrice) /
-                          selectedProduct.retailPrice) *
-                          100
-                      )
-                    : 0;
+                  const basePrice = selectedProduct?.retailPrice || (offer.unitPrice * 1.8);
+                  const unitMargin = basePrice > 0
+                    ? Math.round(((basePrice - offer.unitPrice) / basePrice) * 100)
+                    : 50;
 
                   return (
                     <tr
@@ -249,7 +257,7 @@ export default function SuppliersPage() {
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-sm text-slate-900">
-                            ${offer.unitPrice.toFixed(2)}
+                            ${(Number(offer.unitPrice) || 0).toFixed(2)}
                           </span>
                           {isBestPrice && (
                             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">

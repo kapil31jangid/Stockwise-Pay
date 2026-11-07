@@ -11,9 +11,11 @@ import {
   CheckCircle2,
   ShieldCheck,
   Package,
+  LogOut,
 } from "lucide-react";
 import { api } from "@/services/api";
 import { InventoryItem, PurchasePlan } from "@/types";
+import { useAuth } from "../../context/AuthContext";
 
 interface NavbarProps {
   onToggleSidebar: () => void;
@@ -21,6 +23,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
   const pathname = usePathname();
+  const { user, openAuthModal, logout } = useAuth();
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [criticalItems, setCriticalItems] = useState<InventoryItem[]>([]);
   const [pendingPlans, setPendingPlans] = useState<PurchasePlan[]>([]);
@@ -161,9 +164,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                           className="p-2 rounded-lg bg-amber-50/60 border border-amber-100 text-xs flex items-center justify-between"
                         >
                           <div>
-                            <p className="font-semibold text-slate-900">{plan.title}</p>
+                            <p className="font-semibold text-slate-900">{plan.title || 'Purchase Plan'}</p>
                             <p className="text-slate-500 text-[11px]">
-                              Total: ${plan.totalAmount.toLocaleString()} ({plan.itemCount} items)
+                              Total: ${(plan.totalAmount ?? 0).toLocaleString()} ({plan.itemCount || (plan.items ? plan.items.length : 0)} items)
                             </p>
                           </div>
                           <Link
@@ -197,6 +200,46 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                 </div>
               </div>
             </>
+          )}
+        </div>
+
+        {/* User Profile / Auth Trigger */}
+        <div className="border-l border-slate-200 pl-2 sm:pl-3 ml-1 flex items-center gap-1 sm:gap-2">
+          {user ? (
+            <>
+              <button
+                type="button"
+                onClick={openAuthModal}
+                className="flex items-center gap-2 p-1 sm:px-2 sm:py-1 rounded-lg hover:bg-slate-100 transition-colors group text-left"
+                title="Click to switch persona or view permissions"
+              >
+                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-bold text-xs flex items-center justify-center shadow-xs">
+                  {user.avatarInitials || "MV"}
+                </div>
+                <div className="hidden lg:block">
+                  <p className="text-xs font-bold text-slate-800 leading-tight group-hover:text-blue-600 transition-colors">
+                    {user.name}
+                  </p>
+                  <p className="text-[10px] text-slate-500 leading-tight">{user.badge || "PRO"}</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={logout}
+                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                title="Sign out & return to Login Screen"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            <Link
+              href="/login"
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors inline-block"
+            >
+              Sign In
+            </Link>
           )}
         </div>
       </div>

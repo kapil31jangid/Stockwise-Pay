@@ -19,6 +19,7 @@ export interface InventoryItem {
 
 export interface SupplierOffer {
   productId: string;
+  sku?: string;
   unitPrice: number;
   moq: number;
   leadTimeDays: number;

@@ -13,10 +13,12 @@ import {
   DollarSign,
   Cpu,
   SlidersHorizontal,
+  LogOut,
 } from "lucide-react";
 import { api } from "@/services/api";
 import { BudgetConfig } from "@/types";
 import { Modal } from "../ui/Modal";
+import { useAuth } from "../../context/AuthContext";
 
 interface SidebarProps {
   isOpen?: boolean;
@@ -25,6 +27,7 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => {
   const pathname = usePathname();
+  const { user, openAuthModal, logout } = useAuth();
   const [budget, setBudget] = useState<BudgetConfig>({
     monthlyBudget: 15000,
     spentThisMonth: 6420,
@@ -48,39 +51,40 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
       name: "Inventory",
       href: "/inventory",
       icon: Package,
-      badge: "12 items",
+      badge: "Catalog",
     },
     {
       name: "Suppliers",
       href: "/suppliers",
       icon: Building2,
-      badge: "5 active",
+      badge: "Vendors",
     },
     {
       name: "Purchase Planner",
       href: "/planner",
       icon: ShoppingCart,
-      badge: "Batch #1",
+      badge: "Batches",
     },
     {
       name: "AI Recommendations",
       href: "/recommendations",
       icon: Sparkles,
-      badge: "5 new",
+      badge: "AI Active",
       highlight: true,
     },
     {
       name: "Payments",
       href: "/payments",
       icon: CreditCard,
-      badge: "PayPal",
+      badge: "PayPal v2",
     },
   ];
 
-  const availableBudget = budget.monthlyBudget - (budget.spentThisMonth + budget.allocatedPending);
-  const budgetUtilization = Math.round(
-    ((budget.spentThisMonth + budget.allocatedPending) / budget.monthlyBudget) * 100
-  );
+  const spent = budget?.spentThisMonth ?? 0;
+  const pending = budget?.allocatedPending ?? 0;
+  const monthly = budget?.monthlyBudget || 15000;
+  const availableBudget = monthly - (spent + pending);
+  const budgetUtilization = Math.round(((spent + pending) / monthly) * 100);
 
   const handleUpdateBudget = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -196,7 +200,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
             </div>
             <button
               onClick={() => {
-                setNewBudgetVal(budget.monthlyBudget.toString());
+                setNewBudgetVal((budget?.monthlyBudget ?? 15000).toString());
                 setIsBudgetModalOpen(true);
               }}
               className="text-[11px] text-blue-400 hover:text-blue-300 hover:underline flex items-center gap-1"
@@ -215,7 +219,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
                   availableBudget >= 0 ? "text-emerald-400" : "text-rose-400"
                 }`}
               >
-                ${availableBudget.toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                ${(availableBudget ?? 0).toLocaleString(undefined, { minimumFractionDigits: 0 })}
               </span>
             </div>
 
@@ -228,31 +232,54 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
                     ? "bg-amber-400"
                     : "bg-blue-500"
                 }`}
-                style={{ width: `${Math.min(100, budgetUtilization)}%` }}
+                style={{ width: `${Math.min(100, Math.max(0, budgetUtilization || 0))}%` }}
               />
             </div>
 
             <div className="flex justify-between text-[10px] text-slate-400">
-              <span>{budgetUtilization}% utilized</span>
-              <span>Total: ${budget.monthlyBudget.toLocaleString()}</span>
+              <span>{budgetUtilization || 0}% utilized</span>
+              <span>Total: ${(budget?.monthlyBudget ?? 15000).toLocaleString()}</span>
             </div>
           </div>
         </div>
 
-        {/* User / Manager Footnote */}
-        <div className="px-4 py-3 border-t border-slate-800/80 bg-slate-950/50 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white font-bold text-xs flex items-center justify-center">
-              MV
+        {/* User / Manager Footnote with Auth Modal Trigger */}
+        <div className="px-4 py-3 border-t border-slate-800/80 bg-slate-950/50">
+          {user ? (
+            <div className="flex items-center gap-2 w-full">
+              <button
+                type="button"
+                onClick={openAuthModal}
+                className="flex-1 flex items-center gap-2.5 min-w-0 text-left hover:opacity-90 transition-opacity group"
+                title="Switch persona or view permissions"
+              >
+                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs">
+                  {user.avatarInitials || "MV"}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition-colors">
+                    {user.name}
+                  </p>
+                  <p className="text-[10px] text-slate-400 truncate">{user.badge || "PRO"}</p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={logout}
+                className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors shrink-0"
+                title="Sign out & return to Login Screen"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
             </div>
-            <div className="text-left">
-              <p className="text-xs font-semibold text-slate-200">Marcus Vance</p>
-              <p className="text-[10px] text-slate-400">Inventory Lead</p>
-            </div>
-          </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            PRO
-          </span>
+          ) : (
+            <Link
+              href="/login"
+              className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-xs"
+            >
+              Sign In to StockWise
+            </Link>
+          )}
         </div>
       </aside>
 
@@ -282,8 +309,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
               />
             </div>
             <p className="text-[11px] text-slate-500 mt-1">
-              Current Spent: ${budget.spentThisMonth.toLocaleString()} | In Pending Plans: $
-              {budget.allocatedPending.toLocaleString()}
+              Current Spent: ${(budget?.spentThisMonth ?? 0).toLocaleString()} | In Pending Plans: $
+              {(budget?.allocatedPending ?? 0).toLocaleString()}
             </p>
           </div>
 
