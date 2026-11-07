@@ -29,58 +29,20 @@ class PayPalService {
   private processedWebhookIds = new Set<string>();
 
   /**
-   * Acquire a distributed lock for a capture operation using PostgreSQL advisory locks.
-   * Returns true if lock acquired, false if already held by another process/instance.
-   * Works across multiple service instances sharing the same database.
+   * Try to acquire a distributed capture lock using the capture_attempts table.
+   * Returns the capture attempt ID if lock acquired, null if already capturing/completed by another instance.
+   * Uses atomic INSERT with unique constraint on paypal_order_id for cross-instance mutual exclusion.
+   * Handles stale CAPTURING records (older than 5 minutes) by allowing safe takeover.
    */
-  private async acquireCaptureLock(orderId: string): Promise<boolean> {
-    if (!db['pgPool']) {
-      // In local store mode (no PostgreSQL), fall back to in-memory lock for dev/test
-      // This is only safe in single-instance deployments
-      return true; // Allow in dev mode without PostgreSQL
-    }
-    try {
-      // Use PostgreSQL advisory lock (session-level, auto-released on disconnect)
-      // Hash the orderId to a 64-bit integer for advisory lock
-      const hash = this.hashOrderIdForLock(orderId);
-      const client = await db['pgPool'].connect();
-      try {
-        const res = await client.query('SELECT pg_try_advisory_xact_lock($1) AS acquired;', [hash]);
-        return res.rows[0]?.acquired === true;
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      if (process.env.NODE_ENV === 'production') {
-        throw new Error(`Failed to acquire distributed capture lock: ${err}`);
-      }
-      console.warn('⚠️ Advisory lock failed in dev mode, allowing capture:', err);
-      return true;
-    }
+  private async tryAcquireCaptureLock(paypalOrderId: string, paymentId: string): Promise<string | null> {
+    return await db.tryAcquireCaptureLock(paypalOrderId, paymentId);
   }
 
   /**
-   * Release the distributed capture lock (advisory locks are transaction-scoped,
-   * so this is a no-op for pg_try_advisory_xact_lock which auto-releases on COMMIT/ROLLBACK).
-   * Kept for API symmetry and potential future lock types.
+   * Mark a capture attempt as completed or failed.
    */
-  private async releaseCaptureLock(orderId: string): Promise<void> {
-    // Advisory transaction locks auto-release on transaction end
-    // No explicit release needed for pg_try_advisory_xact_lock
-  }
-
-  /**
-   * Hash orderId to a 64-bit integer for PostgreSQL advisory lock.
-   * Uses a simple FNV-1a hash to distribute locks evenly.
-   */
-  private hashOrderIdForLock(orderId: string): number {
-    let hash = 0xcbf29ce484222325; // FNV offset basis (64-bit)
-    for (let i = 0; i < orderId.length; i++) {
-      hash ^= orderId.charCodeAt(i);
-      hash = Math.imul(hash, 0x100000001b3); // FNV prime
-    }
-    // Convert to signed 64-bit integer (PostgreSQL BIGINT range)
-    return Number(BigInt.asIntN(64, BigInt(hash)));
+  private async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string): Promise<void> {
+    await db.completeCaptureAttempt(attemptId, paypalCaptureId, error);
   }
 
   /**
@@ -326,341 +288,385 @@ class PayPalService {
   }
 
   /**
-   * Capture PayPal Order with Distributed Concurrency Lock, Amount/Version Verification, and Fail-Closed State Checking
-   * Uses PostgreSQL advisory locks for cross-instance capture protection.
+   * Capture PayPal Order with Distributed Concurrency Lock via capture_attempts table,
+   * Amount/Version Verification, and Fail-Closed State Checking.
+   * Uses atomic INSERT with unique constraint on paypal_order_id for cross-instance mutual exclusion.
    * PayPal-Request-Id header provides API-level idempotency.
+   * Stale CAPTURING records (older than 5 minutes) allow safe takeover and reconciliation.
    */
   async captureOrder(orderId: string, actor: string): Promise<CaptureOrderResult> {
-    // 1. Distributed concurrency lock: Prevent duplicate concurrent capture requests across service instances
-    const lockAcquired = await this.acquireCaptureLock(orderId);
-    if (!lockAcquired) {
-      throw new Error(`Capture transaction already in progress for order ${orderId} (distributed lock held by another instance).`);
+    // 1. Get payment record first
+    const existingPayment = await db.getPaymentByPaypalOrderId(orderId);
+    if (!existingPayment) {
+      throw new Error(`Payment record not found for PayPal Order: ${orderId}`);
     }
 
-    try {
-      const existingPayment = await db.getPaymentByPaypalOrderId(orderId);
-      if (!existingPayment) {
-        throw new Error(`Payment record not found for PayPal Order: ${orderId}`);
-      }
-
-      // 2. Idempotency: Return existing completed capture without double-spending
-      if (existingPayment.verifiedStatus === 'COMPLETED' && existingPayment.paypalCaptureId) {
-        return {
-          captureId: existingPayment.paypalCaptureId,
-          orderId: existingPayment.paypalOrderId,
-          status: 'COMPLETED',
-          amount: existingPayment.amount,
-          currency: existingPayment.currency,
-          payerEmail: existingPayment.payerEmail || 'buyer-retail@stockwise.test',
-          transactionTime: existingPayment.updatedAt,
-          isMock: existingPayment.paymentMethod.includes('Simulated')
-        };
-      }
-
-      // 3. Verify purchase-plan association and approval version
-      const plan = await db.getPurchasePlan(existingPayment.purchasePlanId);
-      if (!plan) {
-        throw new Error(`Associated purchase plan ${existingPayment.purchasePlanId} not found.`);
-      }
-
-      if (plan.planStatus !== 'approved' && plan.planStatus !== 'paid') {
-        throw new Error(`Purchase plan ${plan.id} is in status '${plan.planStatus}'. Explicit manager approval is required before capture.`);
-      }
-
-      if (plan.currentVersion !== existingPayment.planVersion) {
-        throw new Error(`Plan version mismatch: Order was generated for v${existingPayment.planVersion}, but plan is currently at v${plan.currentVersion}. Re-approval required.`);
-      }
-
-      const token = await this.getAccessToken();
-
-      if (token && !existingPayment.paymentMethod.includes('Simulated')) {
-        // Real PayPal Sandbox API Execution:
-        // Step A: Fail-closed verification of live order status from PayPal
-        const orderStatusRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        });
-
-        if (!orderStatusRes.ok) {
-          const errText = await orderStatusRes.text();
-          throw new Error(`Failed to verify PayPal order status before capture (HTTP ${orderStatusRes.status}): ${errText}`);
-        }
-
-        const liveOrder = await orderStatusRes.json() as any;
-
-        // Step B: Verify amount and currency match
-        const purchaseUnit = liveOrder.purchase_units?.[0];
-        if (purchaseUnit?.amount) {
-          const liveAmount = Number(purchaseUnit.amount.value);
-          const liveCurrency = purchaseUnit.amount.currency_code;
-          if (Math.abs(liveAmount - existingPayment.amount) > 0.01) {
-            throw new Error(`Payment verification failed: Amount mismatch between local record ($${existingPayment.amount}) and PayPal order ($${liveAmount}).`);
-          }
-          if (liveCurrency && liveCurrency !== existingPayment.currency) {
-            throw new Error(`Payment verification failed: Currency mismatch (${existingPayment.currency} vs ${liveCurrency}).`);
-          }
-        }
-
-        // Step C: Validate buyer authorization status explicitly or reconcile already completed orders
-        if (liveOrder.status === 'COMPLETED') {
-          // Reconcile PayPal-success scenario where order was already captured in PayPal
-          const completedCapture = liveOrder.purchase_units?.[0]?.payments?.captures?.[0];
-          if (completedCapture && completedCapture.status === 'COMPLETED' && completedCapture.id) {
-            // --- Strict Capture Validation for COMPLETED Order Reconciliation ---
-            if (!completedCapture.id || typeof completedCapture.id !== 'string' || completedCapture.id.trim() === '') {
-              throw new Error(`PayPal reconciliation failed: Missing or invalid capture ID in completed order.`);
-            }
-            if (completedCapture.status !== 'COMPLETED') {
-              throw new Error(`PayPal reconciliation failed: Capture not completed (status: ${completedCapture.status}).`);
-            }
-            const rawAmountValue = completedCapture.amount?.value;
-            if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
-              throw new Error(`PayPal reconciliation failed: Missing capture amount value.`);
-            }
-            const returnedAmount = Number(rawAmountValue);
-            if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
-              throw new Error(`PayPal reconciliation failed: Malformed or non-numeric capture amount value.`);
-            }
-            const returnedCurrency = completedCapture.amount?.currency_code;
-            if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
-              throw new Error(`PayPal reconciliation failed: Missing or invalid capture currency code.`);
-            }
-            if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
-              throw new Error(`PayPal reconciliation failed: Amount mismatch ($${returnedAmount.toFixed(2)} vs $${existingPayment.amount.toFixed(2)}).`);
-            }
-            if (returnedCurrency !== existingPayment.currency) {
-              throw new Error(`PayPal reconciliation failed: Currency mismatch (${returnedCurrency} vs ${existingPayment.currency}).`);
-            }
-
-            const payerEmail = liveOrder.payer?.email_address || 'buyer@stockwise.test';
-            const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-              payment: existingPayment,
-              planId: existingPayment.purchasePlanId,
-              amount: existingPayment.amount,
-              actor,
-              captureId: completedCapture.id,
-              rawPaypalResponse: liveOrder,
-              payerEmail
-            });
-
-            return {
-              captureId: completedCapture.id,
-              orderId,
-              status: 'COMPLETED',
-              amount: completedPayment.amount,
-              currency: completedPayment.currency,
-              payerEmail,
-              transactionTime: completedPayment.updatedAt,
-              isMock: false
-            };
-          }
-        }
-
-        if (liveOrder.status !== 'APPROVED') {
-          if (process.env.NODE_ENV === 'test') {
-            console.warn(`[PayPal Sandbox] Order ${orderId} in test mode (${liveOrder.status}) — proceeding with test execution.`);
-          } else {
-            throw new Error(`PayPal Order ${orderId} cannot be captured: Buyer has not authorized payment (current PayPal status: ${liveOrder.status}).`);
-          }
-        }
-
-        // Step D: Execute server capture with idempotency header
-        const res = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            'PayPal-Request-Id': `CAP-${orderId}`
-          }
-        });
-
-        if (!res.ok) {
-          const errorText = await res.text();
-          if (errorText.includes('ORDER_ALREADY_CAPTURED')) {
-            // Reconcile already captured order in PayPal
-            const refetchRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
-              method: 'GET',
-              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-            });
-            if (refetchRes.ok) {
-              const reconciledOrder = await refetchRes.json() as any;
-              const cap = reconciledOrder.purchase_units?.[0]?.payments?.captures?.[0];
-
-              // --- Strict Capture Validation for Reconciliation ---
-              if (!cap?.id || typeof cap.id !== 'string' || cap.id.trim() === '') {
-                throw new Error(`PayPal reconciliation failed: Missing or invalid capture ID in reconciled order.`);
-              }
-              if (cap.status !== 'COMPLETED') {
-                throw new Error(`PayPal reconciliation failed: Reconciled capture not completed (status: ${cap.status}).`);
-              }
-              const rawAmountValue = cap.amount?.value;
-              if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
-                throw new Error(`PayPal reconciliation failed: Missing capture amount value.`);
-              }
-              const returnedAmount = Number(rawAmountValue);
-              if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
-                throw new Error(`PayPal reconciliation failed: Malformed or non-numeric capture amount value.`);
-              }
-              const returnedCurrency = cap.amount?.currency_code;
-              if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
-                throw new Error(`PayPal reconciliation failed: Missing or invalid capture currency code.`);
-              }
-              if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
-                throw new Error(`PayPal reconciliation failed: Amount mismatch ($${returnedAmount.toFixed(2)} vs $${existingPayment.amount.toFixed(2)}).`);
-              }
-              if (returnedCurrency !== existingPayment.currency) {
-                throw new Error(`PayPal reconciliation failed: Currency mismatch (${returnedCurrency} vs ${existingPayment.currency}).`);
-              }
-
-              const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-                payment: existingPayment,
-                planId: existingPayment.purchasePlanId,
-                amount: existingPayment.amount,
-                actor,
-                captureId: cap.id,
-                rawPaypalResponse: reconciledOrder,
-                payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test'
-              });
-              return {
-                captureId: cap.id,
-                orderId,
-                status: 'COMPLETED',
-                amount: completedPayment.amount,
-                currency: completedPayment.currency,
-                payerEmail: completedPayment.payerEmail || 'buyer@stockwise.test',
-                transactionTime: completedPayment.updatedAt,
-                isMock: false
-              };
-            }
-          }
-
-          if (errorText.includes('ORDER_NOT_APPROVED')) {
-            if (process.env.NODE_ENV === 'test') {
-              console.warn(`[PayPal Sandbox] Order ${orderId} automated test/demo fulfillment in test mode.`);
-              const simCaptureId = `CAP-SANDBOX-${Date.now()}`;
-              
-              const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-                payment: existingPayment,
-                planId: existingPayment.purchasePlanId,
-                amount: existingPayment.amount,
-                actor,
-                captureId: simCaptureId,
-                rawPaypalResponse: { note: 'Completed via sandbox test flow', raw: errorText },
-                payerEmail: 'buyer-retail@stockwise.test'
-              });
-
-              return {
-                captureId: simCaptureId,
-                orderId,
-                status: 'COMPLETED',
-                amount: completedPayment.amount,
-                currency: completedPayment.currency,
-                payerEmail: completedPayment.payerEmail || 'buyer-retail@stockwise.test',
-                transactionTime: completedPayment.updatedAt,
-                isMock: true
-              };
-            } else {
-              throw new Error(`PayPal Order ${orderId} cannot be captured: Buyer has not yet authorized payment in the PayPal checkout window.`);
-            }
-          }
-          throw new Error(`PayPal capture failed: ${errorText}`);
-        }
-
-        const captureData = await res.json() as any;
-        const capture = captureData.purchase_units?.[0]?.payments?.captures?.[0];
-
-        // --- Strict Capture Validation (Findings 1) ---
-        // 1. Require capture.id
-        if (!capture?.id || typeof capture.id !== 'string' || capture.id.trim() === '') {
-          throw new Error(`Malformed PayPal capture response: Missing or invalid capture ID. Response: ${JSON.stringify(captureData)}`);
-        }
-
-        // 2. Require capture.status === COMPLETED
-        if (capture.status !== 'COMPLETED') {
-          throw new Error(`PayPal capture not completed (current status: ${capture.status}). Transaction rejected.`);
-        }
-
-        // 3. Require capture.amount.value (must exist, be non-null, numeric, and finite)
-        const rawAmountValue = capture.amount?.value;
-        if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
-          throw new Error(`PayPal capture validation failed: Missing capture amount value.`);
-        }
-        const returnedAmount = Number(rawAmountValue);
-        if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
-          throw new Error(`PayPal capture validation failed: Malformed or non-numeric capture amount value: "${rawAmountValue}".`);
-        }
-
-        // 4. Require capture.amount.currency_code (must exist, be non-null, non-empty string)
-        const returnedCurrency = capture.amount?.currency_code;
-        if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
-          throw new Error(`PayPal capture validation failed: Missing or invalid capture currency code.`);
-        }
-
-        // 5. Compare amount and currency with authoritative database payment
-        if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
-          throw new Error(`Payment verification failed: Amount returned by PayPal ($${returnedAmount.toFixed(2)}) does not match expected plan total ($${existingPayment.amount.toFixed(2)}).`);
-        }
-        if (returnedCurrency !== existingPayment.currency) {
-          throw new Error(`Payment verification failed: Currency returned (${returnedCurrency}) does not match expected (${existingPayment.currency}).`);
-        }
-
-        const captureId = capture.id;
-        const payerEmail = captureData.payer?.email_address || 'buyer-retail@stockwise.test';
-
-        const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-          payment: existingPayment,
-          planId: existingPayment.purchasePlanId,
-          amount: existingPayment.amount,
-          actor,
-          captureId,
-          rawPaypalResponse: captureData,
-          payerEmail
-        });
-
-        return {
-          captureId,
-          orderId,
-          status: 'COMPLETED',
-          amount: completedPayment.amount,
-          currency: completedPayment.currency,
-          payerEmail,
-          transactionTime: completedPayment.updatedAt,
-          isMock: false
-        };
-      }
-
-      // Offline / Simulation execution strictly restricted to dev/test
-      if (process.env.NODE_ENV === 'production') {
-        throw new Error('FATAL: PayPal Simulator is disabled in production. Valid PayPal credentials are required.');
-      }
-
-      const captureId = `CAP-SIM-${Date.now()}`;
-      const payerEmail = 'simulated-buyer@stockwise.test';
-      const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-        payment: existingPayment,
-        planId: existingPayment.purchasePlanId,
-        amount: existingPayment.amount,
-        actor,
-        captureId,
-        rawPaypalResponse: { simulated: true, captureId },
-        payerEmail
-      });
-
+    // 2. Idempotency: Return existing completed capture without double-spending
+    if (existingPayment.verifiedStatus === 'COMPLETED' && existingPayment.paypalCaptureId) {
       return {
-        captureId,
-        orderId,
+        captureId: existingPayment.paypalCaptureId,
+        orderId: existingPayment.paypalOrderId,
         status: 'COMPLETED',
-        amount: completedPayment.amount,
-        currency: completedPayment.currency,
-        payerEmail,
-        transactionTime: completedPayment.updatedAt,
-        isMock: true
+        amount: existingPayment.amount,
+        currency: existingPayment.currency,
+        payerEmail: existingPayment.payerEmail || 'buyer-retail@stockwise.test',
+        transactionTime: existingPayment.updatedAt,
+        isMock: existingPayment.paymentMethod.includes('Simulated')
       };
-    } finally {
-      await this.releaseCaptureLock(orderId);
+    }
+
+    // 3. Try to acquire distributed capture lock via capture_attempts table
+    const attemptId = await this.tryAcquireCaptureLock(orderId, existingPayment.id);
+    if (!attemptId) {
+      // Check if already completed by another instance
+      const existingAttempt = await db.getCaptureAttemptByOrderId(orderId);
+      if (existingAttempt?.status === 'COMPLETED' && existingAttempt.paypalCaptureId) {
+        const payment = await db.getPayment(existingPayment.id);
+        if (payment) {
+          return {
+            captureId: existingAttempt.paypalCaptureId,
+            orderId: existingPayment.paypalOrderId,
+            status: 'COMPLETED',
+            amount: payment.amount,
+            currency: payment.currency,
+            payerEmail: payment.payerEmail || 'buyer-retail@stockwise.test',
+            transactionTime: payment.updatedAt,
+            isMock: payment.paymentMethod.includes('Simulated')
+          };
+        }
+      }
+      throw new Error(`Capture transaction already in progress or completed for order ${orderId} (capture lock held by another instance).`);
+    }
+
+    // 4. Verify purchase-plan association and approval version
+    const plan = await db.getPurchasePlan(existingPayment.purchasePlanId);
+    if (!plan) {
+      await this.completeCaptureAttempt(attemptId, '', 'Associated purchase plan not found');
+      throw new Error(`Associated purchase plan ${existingPayment.purchasePlanId} not found.`);
+    }
+
+    if (plan.planStatus !== 'approved' && plan.planStatus !== 'paid') {
+      await this.completeCaptureAttempt(attemptId, '', `Plan status ${plan.planStatus} requires approval`);
+      throw new Error(`Purchase plan ${plan.id} is in status '${plan.planStatus}'. Explicit manager approval is required before capture.`);
+    }
+
+    if (plan.currentVersion !== existingPayment.planVersion) {
+      await this.completeCaptureAttempt(attemptId, '', `Plan version mismatch: ${existingPayment.planVersion} vs ${plan.currentVersion}`);
+      throw new Error(`Plan version mismatch: Order was generated for v${existingPayment.planVersion}, but plan is currently at v${plan.currentVersion}. Re-approval required.`);
+    }
+
+    const token = await this.getAccessToken();
+
+    // 5. Real PayPal Sandbox or Simulated execution
+    try {
+      if (token && !existingPayment.paymentMethod.includes('Simulated')) {
+        return await this.executeRealCapture(orderId, existingPayment, plan, actor, attemptId, token);
+      } else {
+        return await this.executeSimulatedCapture(existingPayment, actor, attemptId);
+      }
+    } catch (captureError: any) {
+      await this.completeCaptureAttempt(attemptId, '', captureError.message);
+      throw captureError;
+    }
+  }
+
+  /**
+   * Execute real PayPal Sandbox capture with full validation
+   */
+  private async executeRealCapture(
+    orderId: string,
+    existingPayment: any,
+    plan: any,
+    actor: string,
+    attemptId: string,
+    token: string
+  ): Promise<CaptureOrderResult> {
+    // Step A: Fail-closed verification of live order status from PayPal
+    const orderStatusRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!orderStatusRes.ok) {
+      const errText = await orderStatusRes.text();
+      throw new Error(`Failed to verify PayPal order status before capture (HTTP ${orderStatusRes.status}): ${errText}`);
+    }
+
+    const liveOrder = await orderStatusRes.json() as any;
+
+    // Step B: Verify amount and currency match
+    const purchaseUnit = liveOrder.purchase_units?.[0];
+    if (purchaseUnit?.amount) {
+      const liveAmount = Number(purchaseUnit.amount.value);
+      const liveCurrency = purchaseUnit.amount.currency_code;
+      if (Math.abs(liveAmount - existingPayment.amount) > 0.01) {
+        throw new Error(`Payment verification failed: Amount mismatch between local record ($${existingPayment.amount}) and PayPal order ($${liveAmount}).`);
+      }
+      if (liveCurrency && liveCurrency !== existingPayment.currency) {
+        throw new Error(`Payment verification failed: Currency mismatch (${existingPayment.currency} vs ${liveCurrency}).`);
+      }
+    }
+
+    // Step C: Validate buyer authorization status explicitly or reconcile already completed orders
+    if (liveOrder.status === 'COMPLETED') {
+      return await this.reconcileCompletedOrder(liveOrder, existingPayment, plan, actor, attemptId);
+    }
+
+    if (liveOrder.status !== 'APPROVED') {
+      if (process.env.NODE_ENV === 'test') {
+        console.warn(`[PayPal Sandbox] Order ${orderId} in test mode (${liveOrder.status}) — proceeding with test execution.`);
+      } else {
+        throw new Error(`PayPal Order ${orderId} cannot be captured: Buyer has not authorized payment (current PayPal status: ${liveOrder.status}).`);
+      }
+    }
+
+    // Step D: Execute server capture with idempotency header
+    const res = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'PayPal-Request-Id': `CAP-${orderId}`
+      }
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      if (errorText.includes('ORDER_ALREADY_CAPTURED')) {
+        return await this.reconcileAlreadyCaptured(orderId, existingPayment, plan, actor, attemptId, token);
+      }
+
+      if (errorText.includes('ORDER_NOT_APPROVED')) {
+        if (process.env.NODE_ENV === 'test') {
+          console.warn(`[PayPal Sandbox] Order ${orderId} automated test/demo fulfillment in test mode.`);
+          const simCaptureId = `CAP-SANDBOX-${Date.now()}`;
+          const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+            payment: existingPayment,
+            planId: existingPayment.purchasePlanId,
+            amount: existingPayment.amount,
+            actor,
+            captureId: simCaptureId,
+            rawPaypalResponse: { note: 'Completed via sandbox test flow', raw: errorText },
+            payerEmail: 'buyer-retail@stockwise.test'
+          });
+          await this.completeCaptureAttempt(attemptId, simCaptureId);
+          return {
+            captureId: simCaptureId,
+            orderId,
+            status: 'COMPLETED',
+            amount: completedPayment.amount,
+            currency: completedPayment.currency,
+            payerEmail: completedPayment.payerEmail || 'buyer-retail@stockwise.test',
+            transactionTime: completedPayment.updatedAt,
+            isMock: true
+          };
+        } else {
+          throw new Error(`PayPal Order ${orderId} cannot be captured: Buyer has not yet authorized payment in the PayPal checkout window.`);
+        }
+      }
+      throw new Error(`PayPal capture failed: ${errorText}`);
+    }
+
+    const captureData = await res.json() as any;
+    const capture = captureData.purchase_units?.[0]?.payments?.captures?.[0];
+
+    // --- Strict Capture Validation ---
+    this.validateCaptureResponse(capture, captureData, existingPayment);
+
+    const captureId = capture.id;
+    const payerEmail = captureData.payer?.email_address || 'buyer-retail@stockwise.test';
+
+    const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+      payment: existingPayment,
+      planId: existingPayment.purchasePlanId,
+      amount: existingPayment.amount,
+      actor,
+      captureId,
+      rawPaypalResponse: captureData,
+      payerEmail
+    });
+
+    await this.completeCaptureAttempt(attemptId, captureId);
+
+    return {
+      captureId,
+      orderId,
+      status: 'COMPLETED',
+      amount: completedPayment.amount,
+      currency: completedPayment.currency,
+      payerEmail,
+      transactionTime: completedPayment.updatedAt,
+      isMock: false
+    };
+  }
+
+  /**
+   * Reconcile a PayPal order that was already captured (COMPLETED status)
+   */
+  private async reconcileCompletedOrder(
+    liveOrder: any,
+    existingPayment: any,
+    plan: any,
+    actor: string,
+    attemptId: string
+  ): Promise<CaptureOrderResult> {
+    const completedCapture = liveOrder.purchase_units?.[0]?.payments?.captures?.[0];
+    if (!completedCapture || completedCapture.status !== 'COMPLETED' || !completedCapture.id) {
+      throw new Error(`PayPal reconciliation failed: No completed capture found in COMPLETED order.`);
+    }
+
+    this.validateCaptureResponse(completedCapture, liveOrder, existingPayment);
+
+    const payerEmail = liveOrder.payer?.email_address || 'buyer@stockwise.test';
+    const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+      payment: existingPayment,
+      planId: existingPayment.purchasePlanId,
+      amount: existingPayment.amount,
+      actor,
+      captureId: completedCapture.id,
+      rawPaypalResponse: liveOrder,
+      payerEmail
+    });
+
+    await this.completeCaptureAttempt(attemptId, completedCapture.id);
+
+    return {
+      captureId: completedCapture.id,
+      orderId: existingPayment.paypalOrderId,
+      status: 'COMPLETED',
+      amount: completedPayment.amount,
+      currency: completedPayment.currency,
+      payerEmail,
+      transactionTime: completedPayment.updatedAt,
+      isMock: false
+    };
+  }
+
+  /**
+   * Reconcile an already captured order (ORDER_ALREADY_CAPTURED error)
+   */
+  private async reconcileAlreadyCaptured(
+    orderId: string,
+    existingPayment: any,
+    plan: any,
+    actor: string,
+    attemptId: string,
+    token: string
+  ): Promise<CaptureOrderResult> {
+    const refetchRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    });
+    if (!refetchRes.ok) {
+      throw new Error(`Failed to refetch order for reconciliation`);
+    }
+
+    const reconciledOrder = await refetchRes.json() as any;
+    const cap = reconciledOrder.purchase_units?.[0]?.payments?.captures?.[0];
+
+    this.validateCaptureResponse(cap, reconciledOrder, existingPayment);
+
+    const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+      payment: existingPayment,
+      planId: existingPayment.purchasePlanId,
+      amount: existingPayment.amount,
+      actor,
+      captureId: cap.id,
+      rawPaypalResponse: reconciledOrder,
+      payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test'
+    });
+
+    await this.completeCaptureAttempt(attemptId, cap.id);
+
+    return {
+      captureId: cap.id,
+      orderId,
+      status: 'COMPLETED',
+      amount: completedPayment.amount,
+      currency: completedPayment.currency,
+      payerEmail: completedPayment.payerEmail || 'buyer@stockwise.test',
+      transactionTime: completedPayment.updatedAt,
+      isMock: false
+    };
+  }
+
+  /**
+   * Execute simulated capture for dev/test environments
+   */
+  private async executeSimulatedCapture(
+    existingPayment: any,
+    actor: string,
+    attemptId: string
+  ): Promise<CaptureOrderResult> {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: PayPal Simulator is disabled in production. Valid PayPal credentials are required.');
+    }
+
+    const captureId = `CAP-SIM-${Date.now()}`;
+    const payerEmail = 'simulated-buyer@stockwise.test';
+    const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+      payment: existingPayment,
+      planId: existingPayment.purchasePlanId,
+      amount: existingPayment.amount,
+      actor,
+      captureId,
+      rawPaypalResponse: { simulated: true, captureId },
+      payerEmail
+    });
+
+    await this.completeCaptureAttempt(attemptId, captureId);
+
+    return {
+      captureId,
+      orderId: existingPayment.paypalOrderId,
+      status: 'COMPLETED',
+      amount: completedPayment.amount,
+      currency: completedPayment.currency,
+      payerEmail,
+      transactionTime: completedPayment.updatedAt,
+      isMock: true
+    };
+  }
+
+  /**
+   * Strict capture response validation - validates all required fields
+   */
+  private validateCaptureResponse(capture: any, captureData: any, existingPayment: any): void {
+    // 1. Require capture.id
+    if (!capture?.id || typeof capture.id !== 'string' || capture.id.trim() === '') {
+      throw new Error(`Malformed PayPal capture response: Missing or invalid capture ID. Response: ${JSON.stringify(captureData)}`);
+    }
+
+    // 2. Require capture.status === COMPLETED
+    if (capture.status !== 'COMPLETED') {
+      throw new Error(`PayPal capture not completed (current status: ${capture.status}). Transaction rejected.`);
+    }
+
+    // 3. Require capture.amount.value (must exist, be non-null, numeric, and finite)
+    const rawAmountValue = capture.amount?.value;
+    if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
+      throw new Error(`PayPal capture validation failed: Missing capture amount value.`);
+    }
+    const returnedAmount = Number(rawAmountValue);
+    if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
+      throw new Error(`PayPal capture validation failed: Malformed or non-numeric capture amount value: "${rawAmountValue}".`);
+    }
+
+    // 4. Require capture.amount.currency_code (must exist, be non-null, non-empty string)
+    const returnedCurrency = capture.amount?.currency_code;
+    if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
+      throw new Error(`PayPal capture validation failed: Missing or invalid capture currency code.`);
+    }
+
+    // 5. Compare amount and currency with authoritative database payment
+    if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
+      throw new Error(`Payment verification failed: Amount returned by PayPal ($${returnedAmount.toFixed(2)}) does not match expected plan total ($${existingPayment.amount.toFixed(2)}).`);
+    }
+    if (returnedCurrency !== existingPayment.currency) {
+      throw new Error(`Payment verification failed: Currency returned (${returnedCurrency}) does not match expected (${existingPayment.currency}).`);
     }
   }
 

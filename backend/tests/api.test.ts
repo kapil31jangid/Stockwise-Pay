@@ -831,3 +831,143 @@ test('Budget Safety: Database transaction rejects payment capture when budget ce
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYMENT AUTHORIZATION TESTS (New)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Payment History: Buyer role is forbidden from viewing payment ledger', async () => {
+  const buyerAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyerToken}`
+  };
+
+  const buyerFetch = (url: string, init?: RequestInit) => {
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...buyerAuthHeaders,
+        ...(init?.headers || {})
+      }
+    });
+  };
+
+  const res = await buyerFetch(`${baseUrl}/api/paypal/payments`);
+  assert.equal(res.status, 403);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /Forbidden/i);
+  assert.equal(data.code, 'INSUFFICIENT_ROLE');
+});
+
+test('Payment History: Approver role can view payment ledger', async () => {
+  const res = await authFetch(`${baseUrl}/api/paypal/payments`);
+  assert.equal(res.status, 200);
+  const data = await res.json() as any;
+  assert.equal(data.success, true);
+  assert.ok(Array.isArray(data.data));
+  assert.ok(data.total >= 0);
+});
+
+test('Payment History: Treasury role can view payment ledger', async () => {
+  const treasuryAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${treasuryToken}`
+  };
+
+  const treasuryFetch = (url: string, init?: RequestInit) => {
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...treasuryAuthHeaders,
+        ...(init?.headers || {})
+      }
+    });
+  };
+
+  const res = await treasuryFetch(`${baseUrl}/api/paypal/payments`);
+  assert.equal(res.status, 200);
+  const data = await res.json() as any;
+  assert.equal(data.success, true);
+});
+
+test('Payment Status: Unauthorized access to non-existent payment returns 404', async () => {
+  const res = await authFetch(`${baseUrl}/api/paypal/payments/NONEXISTENT-PAYMENT-ID/status`);
+  assert.equal(res.status, 404);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('Payment Status: Valid payment status accessible by approver', async () => {
+  // First create a plan, approve, and create order to get a valid payment
+  const genRes = await authFetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData = await genRes.json() as any;
+  const planId = genData.plan.id;
+
+  await authFetch(`${baseUrl}/api/plans/${planId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  const orderRes = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId })
+  });
+  const orderData = await orderRes.json() as any;
+  const paypalOrderId = orderData.data.orderId;
+
+  // Get payment status
+  const statusRes = await authFetch(`${baseUrl}/api/paypal/payments/${paypalOrderId}/status`);
+  assert.equal(statusRes.status, 200);
+  const statusData = await statusRes.json() as any;
+  assert.equal(statusData.success, true);
+  assert.equal(statusData.data.paypalOrderId, paypalOrderId);
+});
+
+test('Payment Status: Buyer can access payment status for their plan', async () => {
+  // Generate plan as buyer
+  const buyerAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyerToken}`
+  };
+
+  const buyerFetch = (url: string, init?: RequestInit) => {
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...buyerAuthHeaders,
+        ...(init?.headers || {})
+      }
+    });
+  };
+
+  // Generate plan as buyer
+  const genRes = await buyerFetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData = await genRes.json() as any;
+  const planId = genData.plan.id;
+
+  // Approve as approver
+  await authFetch(`${baseUrl}/api/plans/${planId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  // Create order as approver
+  const orderRes = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId })
+  });
+  const orderData = await orderRes.json() as any;
+  const paypalOrderId = orderData.data.orderId;
+
+  // Buyer should be able to check payment status (resource they initiated)
+  const statusRes = await buyerFetch(`${baseUrl}/api/paypal/payments/${paypalOrderId}/status`);
+  // Payment status endpoint allows BUYER to check status
+  assert.equal(statusRes.status, 200);
+});
+
