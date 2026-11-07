@@ -16,7 +16,7 @@ router.get('/', async (req: Request, res: Response) => {
     const offers = await db.getSupplierOffers();
 
     const recs = inventoryReport
-      .filter(item => item.recommendation && item.recommendation.recommendedQuantity > 0)
+      .filter(item => item.inventoryAnalysis && item.inventoryAnalysis.recommendedQuantity > 0)
       .map((item, idx) => {
         const itemOffers = offers.filter(o => o.sku === item.sku);
         const bestOffer = itemOffers.length > 0
@@ -24,26 +24,31 @@ router.get('/', async (req: Request, res: Response) => {
           : null;
         const supplier = bestOffer ? suppliers.find(s => s.id === bestOffer.supplierId) : null;
         const unitCost = bestOffer ? bestOffer.unitPrice : 15.0;
-        const recommendedQty = item.recommendation?.recommendedQuantity || 30;
+        const recommendedQty = item.inventoryAnalysis.recommendedQuantity;
         const totalEstimatedCost = Number((recommendedQty * unitCost).toFixed(2));
 
-        const isUrgent = item.runoutDays <= 3 || item.currentStock === 0;
+        const runway = item.inventoryAnalysis.daysUntilStockout !== null
+          ? item.inventoryAnalysis.daysUntilStockout
+          : (item.currentStock <= 10 ? 3.0 : 14.0);
+        const isUrgent = runway <= 3 || item.currentStock === 0 || item.inventoryAnalysis.riskLevel === 'HIGH';
+
+        const explanation = `Stock runway is ${runway.toFixed(1)} days based on current demand (${item.forecasting?.demandTrend || 'STABLE'} trend). Restocking ${recommendedQty} units prevents stockout.`;
 
         return {
           id: `rec-${item.sku.toLowerCase()}-${idx + 1}`,
           productId: `prod-${item.sku.toLowerCase()}`,
-          productName: item.name,
+          productName: item.productName,
           sku: item.sku,
           action: isUrgent ? 'URGENT_RESTOCK' : 'PREDICTIVE_ORDER',
           urgency: item.currentStock === 0 ? 'critical' : isUrgent ? 'high' : 'medium',
-          explanation: item.recommendation?.reasoning || `Stock runway is ${item.runoutDays.toFixed(1)} days based on current weekly velocity. Restocking ${recommendedQty} units prevents stockout.`,
+          explanation,
           metricHighlights: [
-            { label: 'Runway', value: `${item.runoutDays.toFixed(1)} Days`, positive: item.runoutDays > 5 },
+            { label: 'Runway', value: `${runway.toFixed(1)} Days`, positive: runway > 5 },
             { label: 'Current Stock', value: `${item.currentStock} units`, positive: item.currentStock > 10 },
             { label: 'Lead Time', value: `${bestOffer?.leadTimeDays || 3} Days`, positive: true },
           ],
           recommendedQty,
-          projectedRunoutDays: Number(item.runoutDays.toFixed(1)),
+          projectedRunoutDays: Number(runway.toFixed(1)),
           costSavings: Number((totalEstimatedCost * 0.05).toFixed(2)),
           suggestedSupplier: supplier ? supplier.name : 'Apex Wholesale Direct',
           unitCost,
@@ -69,15 +74,18 @@ router.get('/', async (req: Request, res: Response) => {
           : null;
         const supplier = bestOffer ? suppliers.find(s => s.id === bestOffer.supplierId) : null;
         const unitCost = bestOffer ? bestOffer.unitPrice : 14.5;
-        const recommendedQty = Math.max(25, 60 - item.currentStock);
+        const recommendedQty = item.inventoryAnalysis?.recommendedQuantity || Math.max(25, 60 - item.currentStock);
         const totalEstimatedCost = Number((recommendedQty * unitCost).toFixed(2));
-        const runway = isNaN(item.runoutDays) || !isFinite(item.runoutDays) ? (item.currentStock <= 10 ? 2.5 : 8.0) : Math.max(0.5, item.runoutDays);
+        const days = item.inventoryAnalysis?.daysUntilStockout;
+        const runway = days !== null && days !== undefined && Number.isFinite(days)
+          ? days
+          : (item.currentStock <= 10 ? 2.5 : 8.0);
         const isUrgent = runway <= 4 || item.currentStock <= 10;
 
         recs.push({
           id: `rec-${item.sku.toLowerCase()}-${idx + 1}`,
           productId: `prod-${item.sku.toLowerCase()}`,
-          productName: item.name || `Electronics SKU ${item.sku}`,
+          productName: item.productName || `Electronics SKU ${item.sku}`,
           sku: item.sku,
           action: isUrgent ? 'URGENT_RESTOCK' : 'PREDICTIVE_ORDER',
           urgency: item.currentStock === 0 ? 'critical' : isUrgent ? 'high' : 'medium',
@@ -131,6 +139,7 @@ router.patch(['/recommendations/:id/status', '/:id/status'], async (req: Request
       }
     });
   } catch (err: any) {
+    console.error('Agent analyze error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -155,6 +164,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
       data: result
     });
   } catch (err: any) {
+    console.error('Agent analyze error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -176,6 +186,7 @@ router.get('/runs/:id', async (req: Request, res: Response) => {
       data: run
     });
   } catch (err: any) {
+    console.error('Agent analyze error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -198,6 +209,7 @@ router.post('/simulate', async (req: Request, res: Response) => {
       data: simulation
     });
   } catch (err: any) {
+    console.error('Agent analyze error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

@@ -48,14 +48,21 @@ export class ProcurementAgentService {
    */
   async buildInventoryProducts(): Promise<InventoryProduct[]> {
     const products = await db.getProducts();
-    return products.map(p => ({
-      sku: p.sku,
-      name: p.name,
-      currentStock: p.currentStock,
-      salesHistory: p.salesHistory && p.salesHistory.length > 0 ? p.salesHistory : [2, 3, 2, 4, 3, 2, 5],
-      leadTimeDays: 4, // default modeled lead time
-      safetyStock: p.safetyStock
-    }));
+    return products.map(p => {
+      let history = Array.isArray(p.salesHistory) && p.salesHistory.length > 0 ? [...p.salesHistory] : [2, 3, 2, 4, 3, 2, 5, 3, 4, 2, 3, 4, 3, 4];
+      while (history.length < 14) {
+        history = [...history, ...history];
+      }
+      history = history.slice(0, 30).map(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 2);
+      return {
+        sku: p.sku,
+        name: p.name,
+        currentStock: Number(p.currentStock || 0),
+        salesHistory: history,
+        leadTimeDays: 4, // default modeled lead time
+        safetyStock: Number(p.safetyStock || 10)
+      };
+    });
   }
 
   /**

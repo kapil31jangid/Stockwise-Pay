@@ -24,6 +24,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# database & local persistence
+backend/data/
+data/
+*.db
+*.sqlite
+
 # local env files
 .env*.local
 .env

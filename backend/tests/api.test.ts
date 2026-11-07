@@ -1,3 +1,5 @@
+process.env.NODE_ENV = 'test';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import app from '../src/index.js';
@@ -223,13 +225,205 @@ test('Plan Invalidation: Modifying plan bumps version and invalidates prior appr
   assert.match(checkoutData.error, /Re-approval required/i);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTH EDGE CASE TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Auth: Malformed token (non-Bearer scheme) returns 401', async () => {
+  const res = await fetch(`${baseUrl}/api/inventory`, {
+    headers: { 'Authorization': 'Basic dXNlcjpwYXNz' }
+  });
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('Auth: Empty Authorization header returns 401', async () => {
+  const res = await fetch(`${baseUrl}/api/inventory`, {
+    headers: { 'Authorization': '' }
+  });
+  assert.equal(res.status, 401);
+});
+
+test('Auth: Completely invalid token string returns 401', async () => {
+  const res = await fetch(`${baseUrl}/api/inventory`, {
+    headers: { 'Authorization': 'Bearer totally-invalid-random-token-xyz' }
+  });
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /Unauthorized/i);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLAN REJECTION & EDGE CASE TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Plan Rejection: Reject a plan sets planStatus to rejected', async () => {
+  // 1. Generate plan
+  const genRes = await authFetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 800, preference: 'CHEAPEST' })
+  });
+  const genData = await genRes.json() as any;
+  const planId = genData.plan.id;
+  assert.equal(genData.plan.planStatus, 'pending_approval');
+
+  // 2. Reject plan
+  const rejectRes = await authFetch(`${baseUrl}/api/plans/${planId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance', notes: 'Budget too high this week' })
+  });
+  assert.equal(rejectRes.status, 200);
+  const rejectData = await rejectRes.json() as any;
+  assert.equal(rejectData.success, true);
+  assert.equal(rejectData.plan.planStatus, 'rejected');
+
+  // 3. Attempting checkout on rejected plan must fail
+  const checkoutRes = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId })
+  });
+  assert.equal(checkoutRes.status, 400);
+  const checkoutData = await checkoutRes.json() as any;
+  assert.equal(checkoutData.success, false);
+});
+
+test('Plan Approval: Approving an empty plan returns 400', async () => {
+  // Create a plan via PUT with an empty items list
+  const emptyPlanId = `PLAN-EMPTY-${Date.now()}`;
+  await authFetch(`${baseUrl}/api/plans/${emptyPlanId}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      id: emptyPlanId,
+      name: 'Empty Test Plan',
+      purchasingBudget: 500,
+      calculatedTotal: 0,
+      currentVersion: 1,
+      planStatus: 'pending_approval',
+      selectedItems: [],
+      deferredItems: [],
+      scenarioMode: 'balanced'
+    })
+  });
+
+  const approveRes = await authFetch(`${baseUrl}/api/plans/${emptyPlanId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+  assert.equal(approveRes.status, 400);
+  const approveData = await approveRes.json() as any;
+  assert.equal(approveData.success, false);
+  assert.match(approveData.error, /empty/i);
+});
+
+test('Plan not found returns 404', async () => {
+  const res = await authFetch(`${baseUrl}/api/plans/PLAN-NONEXISTENT-99999`);
+  assert.equal(res.status, 404);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYPAL EDGE CASE TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('PayPal: Create order for non-existent plan returns 400/404', async () => {
+  const res = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId: 'PLAN-DOES-NOT-EXIST-99999' })
+  });
+  assert.ok([400, 404].includes(res.status), `Expected 400 or 404, got ${res.status}`);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('PayPal: Capture non-existent PayPal order returns error', async () => {
+  const res = await authFetch(`${baseUrl}/api/paypal/orders/FAKE-PAYPAL-ORDER-ID-99999/capture`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+  // Should be 400 or 500 — anything but 2xx
+  assert.ok(res.status >= 400, `Expected error status, got ${res.status}`);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('PayPal: Missing planId in create-order body returns 400', async () => {
+  const res = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+  assert.equal(res.status, 400);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV IMPORT TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('CSV Import: Valid CSV with header + rows imports products', async () => {
+  const csvContent = `sku,name,category,currentStock,unitCost\nTEST-CSV-001,Test Widget Alpha,Electronics,25,19.99\nTEST-CSV-002,Test Widget Beta,Electronics,10,34.99`;
+  const res = await authFetch(`${baseUrl}/api/inventory/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ csv: csvContent })
+  });
+  assert.equal(res.status, 200);
+  const data = await res.json() as any;
+  assert.equal(data.success, true);
+  assert.equal(data.importedCount, 2);
+  assert.equal(data.errorCount, 0);
+});
+
+test('CSV Import: Empty CSV body (no rows) returns 400', async () => {
+  const res = await authFetch(`${baseUrl}/api/inventory/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ csv: 'sku,name,category' })  // header only, no data rows
+  });
+  assert.equal(res.status, 400);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /header|data row/i);
+});
+
+test('CSV Import: CSV missing required "sku" header returns 400', async () => {
+  const csvContent = `product_code,title,stock\nABC,Widget,10`;
+  const res = await authFetch(`${baseUrl}/api/inventory/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ csv: csvContent })
+  });
+  assert.equal(res.status, 400);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /sku|required/i);
+});
+
+test('CSV Import: No file and no csv body returns 400', async () => {
+  const res = await authFetch(`${baseUrl}/api/inventory/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  });
+  assert.equal(res.status, 400);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI AGENT TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
 test('AI Agent analyze and simulate endpoints', async () => {
   const analyzeRes = await authFetch(`${baseUrl}/api/agent/analyze`, {
     method: 'POST',
     body: JSON.stringify({ prompt: 'Simulate high volume restock', budget: 1800 })
   });
-  assert.equal(analyzeRes.status, 200);
   const analyzeData = await analyzeRes.json() as any;
+  assert.equal(analyzeRes.status, 200, `Expected 200, got ${analyzeRes.status}: ${JSON.stringify(analyzeData)}`);
   assert.ok(analyzeData.data.runId);
   assert.ok(analyzeData.data.executionStats.toolsCalled.includes('analyze_inventory'));
   assert.ok(analyzeData.data.executionStats.toolsCalled.includes('optimize_budget'));

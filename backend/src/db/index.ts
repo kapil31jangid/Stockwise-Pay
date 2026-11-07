@@ -64,10 +64,21 @@ class DatabaseStore {
         this.isPostgres = true;
         console.log('🐘 PostgreSQL / Supabase connection configured via DATABASE_URL');
       } catch (err) {
-        console.warn('⚠️ Failed to initialize PostgreSQL pool, falling back to local store:', err);
+        if (process.env.NODE_ENV === 'production') {
+          console.error('FATAL: Failed to initialize PostgreSQL pool in production:', err);
+          throw new Error('Production database connection failed. Silent local store fallback is disabled in production.');
+        }
+        console.warn('⚠️ Failed to initialize PostgreSQL pool, falling back to local store (dev mode):', err);
         this.pgPool = null;
         this.isPostgres = false;
       }
+    }
+  }
+
+  private handlePgError(operation: string, err: any): void {
+    console.warn(`PostgreSQL ${operation} error:`, err?.message || err);
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`Production database error during ${operation}: ${err?.message || err}`);
     }
   }
 
@@ -227,7 +238,7 @@ class DatabaseStore {
         `);
         if (res.rows.length > 0) return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getProducts error, falling back to local store:', err);
+        this.handlePgError('getProducts', err);
       }
     }
     return [...this.state.products];
@@ -252,7 +263,7 @@ class DatabaseStore {
         `, [sku]);
         if (res.rows.length > 0) return res.rows[0];
       } catch (err) {
-        console.warn('PostgreSQL getProduct error, falling back to local store:', err);
+        this.handlePgError('getProduct', err);
       }
     }
     const found = this.state.products.find(p => p.sku.toUpperCase() === sku.toUpperCase());
@@ -285,7 +296,7 @@ class DatabaseStore {
           updated.updatedAt
         ]);
       } catch (err) {
-        console.warn('PostgreSQL saveProduct error:', err);
+        this.handlePgError('saveProduct', err);
       }
     }
     const index = this.state.products.findIndex(p => p.sku.toUpperCase() === product.sku.toUpperCase());

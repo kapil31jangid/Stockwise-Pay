@@ -289,47 +289,51 @@ class PayPalService {
       if (!res.ok) {
         const errorText = await res.text();
         if (errorText.includes('ORDER_NOT_APPROVED')) {
-          console.warn(`[PayPal Sandbox] Order ${orderId} not yet approved by buyer in browser; applying automated test/demo fulfillment.`);
-          const simCaptureId = `CAP-SANDBOX-${Date.now()}`;
-          existingPayment.paypalCaptureId = simCaptureId;
-          existingPayment.verifiedStatus = 'COMPLETED';
-          existingPayment.payerEmail = 'buyer-retail@stockwise.test';
-          existingPayment.rawPaypalResponse = { note: 'Completed via sandbox test/demo flow', raw: errorText };
-          existingPayment.updatedAt = new Date().toISOString();
-          await db.savePayment(existingPayment);
+          if (process.env.NODE_ENV === 'test') {
+            console.warn(`[PayPal Sandbox] Order ${orderId} not yet approved by buyer in browser; applying automated test/demo fulfillment.`);
+            const simCaptureId = `CAP-SANDBOX-${Date.now()}`;
+            existingPayment.paypalCaptureId = simCaptureId;
+            existingPayment.verifiedStatus = 'COMPLETED';
+            existingPayment.payerEmail = 'buyer-retail@stockwise.test';
+            existingPayment.rawPaypalResponse = { note: 'Completed via sandbox test/demo flow', raw: errorText };
+            existingPayment.updatedAt = new Date().toISOString();
+            await db.savePayment(existingPayment);
 
-          const plan = await db.getPurchasePlan(existingPayment.purchasePlanId);
-          if (plan) {
-            plan.planStatus = 'paid';
-            await db.savePurchasePlan(plan);
+            const plan = await db.getPurchasePlan(existingPayment.purchasePlanId);
+            if (plan) {
+              plan.planStatus = 'paid';
+              await db.savePurchasePlan(plan);
+            }
+
+            const budget = await db.getBudget();
+            await db.updateBudget({
+              spentAmount: Number((budget.spentAmount + existingPayment.amount).toFixed(2)),
+              allocatedAmount: Math.max(0, Number((budget.allocatedAmount - existingPayment.amount).toFixed(2)))
+            });
+
+            await db.saveAuditLog({
+              actor,
+              action: 'CAPTURE_PAYPAL_ORDER',
+              entityType: 'PAYMENT',
+              entityId: simCaptureId,
+              previousStatus: 'CREATED',
+              newStatus: 'COMPLETED',
+              details: { orderId, captureId: simCaptureId, amount: existingPayment.amount, note: 'Demo/test capture completed' }
+            });
+
+            return {
+              captureId: simCaptureId,
+              orderId,
+              status: 'COMPLETED',
+              amount: existingPayment.amount,
+              currency: existingPayment.currency,
+              payerEmail: existingPayment.payerEmail,
+              transactionTime: existingPayment.updatedAt,
+              isMock: true
+            };
+          } else {
+            throw new Error(`PayPal Order ${orderId} cannot be captured: Buyer has not yet authorized payment in the PayPal checkout window.`);
           }
-
-          const budget = await db.getBudget();
-          await db.updateBudget({
-            spentAmount: Number((budget.spentAmount + existingPayment.amount).toFixed(2)),
-            allocatedAmount: Math.max(0, Number((budget.allocatedAmount - existingPayment.amount).toFixed(2)))
-          });
-
-          await db.saveAuditLog({
-            actor,
-            action: 'CAPTURE_PAYPAL_ORDER',
-            entityType: 'PAYMENT',
-            entityId: simCaptureId,
-            previousStatus: 'CREATED',
-            newStatus: 'COMPLETED',
-            details: { orderId, captureId: simCaptureId, amount: existingPayment.amount, note: 'Demo/test capture completed' }
-          });
-
-          return {
-            captureId: simCaptureId,
-            orderId,
-            status: 'COMPLETED',
-            amount: existingPayment.amount,
-            currency: existingPayment.currency,
-            payerEmail: existingPayment.payerEmail,
-            transactionTime: existingPayment.updatedAt,
-            isMock: true
-          };
         }
         throw new Error(`PayPal capture failed: ${errorText}`);
       }

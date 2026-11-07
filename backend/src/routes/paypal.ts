@@ -32,33 +32,12 @@ router.post('/orders', async (req: Request, res: Response) => {
  */
 router.post('/create-order', async (req: Request, res: Response) => {
   try {
-    const { planId } = req.body;
-    let targetPlanId = planId;
-    if (!targetPlanId) {
-      const plans = await db.getPurchasePlans();
-      const approved = plans.find(p => p.planStatus === 'approved');
-      if (approved) {
-        targetPlanId = approved.id;
-      } else if (plans.length > 0) {
-        targetPlanId = plans[0].id;
-        await db.saveApproval({
-          id: `APP-AUTO-${Date.now()}`,
-          purchasePlanId: targetPlanId,
-          approvedVersion: plans[0].currentVersion,
-          approverName: 'Marcus Vance',
-          approverRole: 'Inventory Lead',
-          status: 'approved',
-          decisionNotes: 'Auto-approved for demo payment test',
-          timestamp: new Date().toISOString()
-        });
-        plans[0].planStatus = 'approved';
-        await db.savePurchasePlan(plans[0]);
-      } else {
-        return res.status(400).json({ success: false, error: 'No purchase plan found to pay' });
-      }
+    const { planId, actor = 'Procurement Manager' } = req.body;
+    if (!planId) {
+      return res.status(400).json({ success: false, error: 'Missing required field: planId. An explicitly approved purchase plan is required.' });
     }
 
-    const result = await paypalService.createOrder(targetPlanId);
+    const result = await paypalService.createOrder(planId, actor);
     res.status(201).json({
       success: true,
       orderId: result.orderId,

@@ -37,7 +37,7 @@ router.get('/', async (req: Request, res: Response) => {
 
       return {
         ...p,
-        id: p.id || `item-${(p.sku || `${idx}`).toLowerCase()}`,
+        id: (p as any).id || `item-${(p.sku || `${idx}`).toLowerCase()}`,
         retailPrice,
         sellingPrice: retailPrice,
         unitCost,
@@ -143,7 +143,7 @@ router.post('/', async (req: Request, res: Response) => {
       safetyStock: Number(safetyStock || 10),
       unitCost: Number(unitCost),
       sellingPrice: Number(sellingPrice || unitCost * 1.5),
-      salesHistory: [2, 3, 2, 4, 3, 2, 3],
+      salesHistory: [2, 3, 2, 4, 3, 2, 4, 3, 3, 2, 4, 3, 2, 3],
       preferredVendorId,
       updatedAt: new Date().toISOString()
     });
@@ -183,7 +183,7 @@ router.post('/batch', async (req: Request, res: Response) => {
         safetyStock: Number(item.safetyStock || 10),
         unitCost: Number(item.unitCost || item.costPrice || 0),
         sellingPrice: Number(item.sellingPrice || item.retailPrice || 0),
-        salesHistory: Array.isArray(item.salesHistory) ? item.salesHistory : [2, 3, 2, 4, 3, 2, 3],
+        salesHistory: Array.isArray(item.salesHistory) && item.salesHistory.length >= 14 ? item.salesHistory : [2, 3, 2, 4, 3, 2, 4, 3, 3, 2, 4, 3, 2, 3],
         preferredVendorId: item.preferredVendorId || item.preferredVendor,
         updatedAt: new Date().toISOString()
       });
@@ -270,7 +270,7 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
         safetyStock: 15,
         unitCost: cost,
         sellingPrice: Number((cost * 1.6).toFixed(2)),
-        salesHistory: [2, 3, 2, 4, 3, 2, 4],
+        salesHistory: [2, 3, 2, 4, 3, 2, 4, 3, 3, 2, 4, 3, 2, 3],
         updatedAt: new Date().toISOString()
       });
     }

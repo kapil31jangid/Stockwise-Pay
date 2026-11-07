@@ -74,32 +74,44 @@ NEXT_PUBLIC_PAYPAL_CLIENT_ID=your-sandbox-client-id
 When `NEXT_PUBLIC_API_URL` is omitted, the frontend automatically falls back to reactive persistent storage (`localStorage`) so your changes (adding products, modifying quantities, approving recommendations, creating PayPal transactions) persist seamlessly across sessions.
 
 ### Backend Endpoints Map:
-- `GET /api/inventory` & `POST /api/inventory/batch`
-- `GET /api/suppliers`
-- `GET /api/purchase-plans` & `PUT /api/purchase-plans/:id`
-- `GET /api/ai-recommendations` & `PATCH /api/ai-recommendations/:id/status`
-- `GET /api/budget` & `PATCH /api/budget`
-- `POST /api/paypal/create-order`
-- `POST /api/paypal/capture-order`
+- `GET /api/inventory`, `GET /api/inventory/analysis`, `POST /api/inventory`, `POST /api/inventory/import`, `POST /api/inventory/batch`
+- `GET /api/suppliers`, `GET /api/suppliers/compare/:sku`
+- `GET /api/plans`, `POST /api/plans/generate`, `GET /api/plans/:id`, `POST /api/plans/:id/recalculate`, `POST /api/plans/:id/approve`, `POST /api/plans/:id/reject`, `GET /api/plans/:id/explanation`, `GET /api/plans/:id/versions`
+- `GET /api/agent`, `POST /api/agent/analyze`, `POST /api/agent/simulate`, `GET /api/agent/runs/:id`
+- `GET /api/budget`, `PATCH /api/budget`
+- `POST /api/paypal/orders`, `POST /api/paypal/orders/:id/capture`, `GET /api/paypal/payments/:orderId/status`
+- `GET /api/audit-logs`
+- `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
+
+---
+
+## 🔒 Security & Authentication Architecture
+
+- **Next.js Edge Middleware (`middleware.ts`)**: Every request to protected application routes (`/`, `/inventory`, `/suppliers`, `/planner`, `/recommendations`, `/payments`) is intercepted at the edge. If the `stockwise_token` cookie is absent or invalid, the browser is immediately issued an HTTP 307 redirect to `/login?redirect=...`.
+- **Backend Bearer Token Enforcement (`requireAuth`)**: All backend API endpoints under `/api/*` (except public health check and auth login) strictly validate the incoming `Authorization: Bearer <token>` header. Missing or malformed tokens return HTTP 401 Unauthorized.
+- **Role-Based Demo Personas**:
+  - **Marcus Vance** (Inventory Lead / Approver) — Authorized for purchase plan approvals and budget adjustments.
+  - **Elena Rostova** (Procurement Specialist / Buyer) — Authorized for catalog management, CSV imports, and purchase plan proposal.
+  - **David Chen** (Chief Financial Officer / Treasury) — Authorized for budget allocation and PayPal capital settlements.
 
 ---
 
 ## 🛠️ Getting Started
 
-### 1. Run All Tests
+### 1. Run All Automated Test Suites
 ```bash
-# Run all 29 automated tests across intelligence, supplier-intelligence, and backend:
+# Run all automated unit and integration tests across intelligence, supplier-intelligence, and backend:
 npm test
 ```
 
 ### 2. Launch the Development Environment
 ```bash
-# In terminal 1: Start Express API Backend (Port 5000)
+# Terminal 1: Start Express API Backend (Port 5000)
 npm run dev:backend
 
-# In terminal 2: Start Next.js Frontend (Port 3000)
+# Terminal 2: Start Next.js Frontend (Port 3000)
 npm run dev:frontend
 ```
 
-Visit [http://localhost:3000](http://localhost:3000) to explore StockWise Pay.
+Visit [http://localhost:3000](http://localhost:3000) to access StockWise Pay.  
 API Health Check: [http://localhost:5000/api/health](http://localhost:5000/api/health)
