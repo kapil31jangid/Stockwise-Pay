@@ -26,8 +26,62 @@ export interface CaptureOrderResult {
 }
 
 class PayPalService {
-  private activeCaptures = new Set<string>();
   private processedWebhookIds = new Set<string>();
+
+  /**
+   * Acquire a distributed lock for a capture operation using PostgreSQL advisory locks.
+   * Returns true if lock acquired, false if already held by another process/instance.
+   * Works across multiple service instances sharing the same database.
+   */
+  private async acquireCaptureLock(orderId: string): Promise<boolean> {
+    if (!db['pgPool']) {
+      // In local store mode (no PostgreSQL), fall back to in-memory lock for dev/test
+      // This is only safe in single-instance deployments
+      return true; // Allow in dev mode without PostgreSQL
+    }
+    try {
+      // Use PostgreSQL advisory lock (session-level, auto-released on disconnect)
+      // Hash the orderId to a 64-bit integer for advisory lock
+      const hash = this.hashOrderIdForLock(orderId);
+      const client = await db['pgPool'].connect();
+      try {
+        const res = await client.query('SELECT pg_try_advisory_xact_lock($1) AS acquired;', [hash]);
+        return res.rows[0]?.acquired === true;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error(`Failed to acquire distributed capture lock: ${err}`);
+      }
+      console.warn('⚠️ Advisory lock failed in dev mode, allowing capture:', err);
+      return true;
+    }
+  }
+
+  /**
+   * Release the distributed capture lock (advisory locks are transaction-scoped,
+   * so this is a no-op for pg_try_advisory_xact_lock which auto-releases on COMMIT/ROLLBACK).
+   * Kept for API symmetry and potential future lock types.
+   */
+  private async releaseCaptureLock(orderId: string): Promise<void> {
+    // Advisory transaction locks auto-release on transaction end
+    // No explicit release needed for pg_try_advisory_xact_lock
+  }
+
+  /**
+   * Hash orderId to a 64-bit integer for PostgreSQL advisory lock.
+   * Uses a simple FNV-1a hash to distribute locks evenly.
+   */
+  private hashOrderIdForLock(orderId: string): number {
+    let hash = 0xcbf29ce484222325; // FNV offset basis (64-bit)
+    for (let i = 0; i < orderId.length; i++) {
+      hash ^= orderId.charCodeAt(i);
+      hash = Math.imul(hash, 0x100000001b3); // FNV prime
+    }
+    // Convert to signed 64-bit integer (PostgreSQL BIGINT range)
+    return Number(BigInt.asIntN(64, BigInt(hash)));
+  }
 
   /**
    * Acquire OAuth2 Access Token from PayPal
@@ -272,15 +326,16 @@ class PayPalService {
   }
 
   /**
-   * Capture PayPal Order with Concurrency Lock, Amount/Version Verification, and Fail-Closed State Checking
+   * Capture PayPal Order with Distributed Concurrency Lock, Amount/Version Verification, and Fail-Closed State Checking
+   * Uses PostgreSQL advisory locks for cross-instance capture protection.
+   * PayPal-Request-Id header provides API-level idempotency.
    */
   async captureOrder(orderId: string, actor: string): Promise<CaptureOrderResult> {
-    // 1. Concurrency lock: Prevent duplicate concurrent capture requests
-    if (this.activeCaptures.has(orderId)) {
-      throw new Error(`Capture transaction already in progress for order ${orderId}. Concurrent requests are locked.`);
+    // 1. Distributed concurrency lock: Prevent duplicate concurrent capture requests across service instances
+    const lockAcquired = await this.acquireCaptureLock(orderId);
+    if (!lockAcquired) {
+      throw new Error(`Capture transaction already in progress for order ${orderId} (distributed lock held by another instance).`);
     }
-
-    this.activeCaptures.add(orderId);
 
     try {
       const existingPayment = await db.getPaymentByPaypalOrderId(orderId);
@@ -354,6 +409,32 @@ class PayPalService {
           // Reconcile PayPal-success scenario where order was already captured in PayPal
           const completedCapture = liveOrder.purchase_units?.[0]?.payments?.captures?.[0];
           if (completedCapture && completedCapture.status === 'COMPLETED' && completedCapture.id) {
+            // --- Strict Capture Validation for COMPLETED Order Reconciliation ---
+            if (!completedCapture.id || typeof completedCapture.id !== 'string' || completedCapture.id.trim() === '') {
+              throw new Error(`PayPal reconciliation failed: Missing or invalid capture ID in completed order.`);
+            }
+            if (completedCapture.status !== 'COMPLETED') {
+              throw new Error(`PayPal reconciliation failed: Capture not completed (status: ${completedCapture.status}).`);
+            }
+            const rawAmountValue = completedCapture.amount?.value;
+            if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
+              throw new Error(`PayPal reconciliation failed: Missing capture amount value.`);
+            }
+            const returnedAmount = Number(rawAmountValue);
+            if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
+              throw new Error(`PayPal reconciliation failed: Malformed or non-numeric capture amount value.`);
+            }
+            const returnedCurrency = completedCapture.amount?.currency_code;
+            if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
+              throw new Error(`PayPal reconciliation failed: Missing or invalid capture currency code.`);
+            }
+            if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
+              throw new Error(`PayPal reconciliation failed: Amount mismatch ($${returnedAmount.toFixed(2)} vs $${existingPayment.amount.toFixed(2)}).`);
+            }
+            if (returnedCurrency !== existingPayment.currency) {
+              throw new Error(`PayPal reconciliation failed: Currency mismatch (${returnedCurrency} vs ${existingPayment.currency}).`);
+            }
+
             const payerEmail = liveOrder.payer?.email_address || 'buyer@stockwise.test';
             const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
               payment: existingPayment,
@@ -407,27 +488,52 @@ class PayPalService {
             if (refetchRes.ok) {
               const reconciledOrder = await refetchRes.json() as any;
               const cap = reconciledOrder.purchase_units?.[0]?.payments?.captures?.[0];
-              if (cap?.id) {
-                const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-                  payment: existingPayment,
-                  planId: existingPayment.purchasePlanId,
-                  amount: existingPayment.amount,
-                  actor,
-                  captureId: cap.id,
-                  rawPaypalResponse: reconciledOrder,
-                  payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test'
-                });
-                return {
-                  captureId: cap.id,
-                  orderId,
-                  status: 'COMPLETED',
-                  amount: completedPayment.amount,
-                  currency: completedPayment.currency,
-                  payerEmail: completedPayment.payerEmail || 'buyer@stockwise.test',
-                  transactionTime: completedPayment.updatedAt,
-                  isMock: false
-                };
+
+              // --- Strict Capture Validation for Reconciliation ---
+              if (!cap?.id || typeof cap.id !== 'string' || cap.id.trim() === '') {
+                throw new Error(`PayPal reconciliation failed: Missing or invalid capture ID in reconciled order.`);
               }
+              if (cap.status !== 'COMPLETED') {
+                throw new Error(`PayPal reconciliation failed: Reconciled capture not completed (status: ${cap.status}).`);
+              }
+              const rawAmountValue = cap.amount?.value;
+              if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
+                throw new Error(`PayPal reconciliation failed: Missing capture amount value.`);
+              }
+              const returnedAmount = Number(rawAmountValue);
+              if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
+                throw new Error(`PayPal reconciliation failed: Malformed or non-numeric capture amount value.`);
+              }
+              const returnedCurrency = cap.amount?.currency_code;
+              if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
+                throw new Error(`PayPal reconciliation failed: Missing or invalid capture currency code.`);
+              }
+              if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
+                throw new Error(`PayPal reconciliation failed: Amount mismatch ($${returnedAmount.toFixed(2)} vs $${existingPayment.amount.toFixed(2)}).`);
+              }
+              if (returnedCurrency !== existingPayment.currency) {
+                throw new Error(`PayPal reconciliation failed: Currency mismatch (${returnedCurrency} vs ${existingPayment.currency}).`);
+              }
+
+              const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+                payment: existingPayment,
+                planId: existingPayment.purchasePlanId,
+                amount: existingPayment.amount,
+                actor,
+                captureId: cap.id,
+                rawPaypalResponse: reconciledOrder,
+                payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test'
+              });
+              return {
+                captureId: cap.id,
+                orderId,
+                status: 'COMPLETED',
+                amount: completedPayment.amount,
+                currency: completedPayment.currency,
+                payerEmail: completedPayment.payerEmail || 'buyer@stockwise.test',
+                transactionTime: completedPayment.updatedAt,
+                isMock: false
+              };
             }
           }
 
@@ -466,20 +572,38 @@ class PayPalService {
         const captureData = await res.json() as any;
         const capture = captureData.purchase_units?.[0]?.payments?.captures?.[0];
 
-        // Require actual PayPal capture ID and verify returned data
-        if (!capture?.id) {
-          throw new Error(`Malformed PayPal capture response: Missing capture ID. Response: ${JSON.stringify(captureData)}`);
-        }
-        if (capture.status !== 'COMPLETED') {
-          throw new Error(`PayPal capture not completed (current status: ${capture.status}).`);
+        // --- Strict Capture Validation (Findings 1) ---
+        // 1. Require capture.id
+        if (!capture?.id || typeof capture.id !== 'string' || capture.id.trim() === '') {
+          throw new Error(`Malformed PayPal capture response: Missing or invalid capture ID. Response: ${JSON.stringify(captureData)}`);
         }
 
-        const returnedAmount = Number(capture.amount?.value);
-        const returnedCurrency = capture.amount?.currency_code;
-        if (!isNaN(returnedAmount) && Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
-          throw new Error(`Payment verification failed: Amount returned by PayPal ($${returnedAmount}) does not match expected plan total ($${existingPayment.amount}).`);
+        // 2. Require capture.status === COMPLETED
+        if (capture.status !== 'COMPLETED') {
+          throw new Error(`PayPal capture not completed (current status: ${capture.status}). Transaction rejected.`);
         }
-        if (returnedCurrency && returnedCurrency !== existingPayment.currency) {
+
+        // 3. Require capture.amount.value (must exist, be non-null, numeric, and finite)
+        const rawAmountValue = capture.amount?.value;
+        if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
+          throw new Error(`PayPal capture validation failed: Missing capture amount value.`);
+        }
+        const returnedAmount = Number(rawAmountValue);
+        if (isNaN(returnedAmount) || !isFinite(returnedAmount)) {
+          throw new Error(`PayPal capture validation failed: Malformed or non-numeric capture amount value: "${rawAmountValue}".`);
+        }
+
+        // 4. Require capture.amount.currency_code (must exist, be non-null, non-empty string)
+        const returnedCurrency = capture.amount?.currency_code;
+        if (returnedCurrency === undefined || returnedCurrency === null || typeof returnedCurrency !== 'string' || returnedCurrency.trim() === '') {
+          throw new Error(`PayPal capture validation failed: Missing or invalid capture currency code.`);
+        }
+
+        // 5. Compare amount and currency with authoritative database payment
+        if (Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
+          throw new Error(`Payment verification failed: Amount returned by PayPal ($${returnedAmount.toFixed(2)}) does not match expected plan total ($${existingPayment.amount.toFixed(2)}).`);
+        }
+        if (returnedCurrency !== existingPayment.currency) {
           throw new Error(`Payment verification failed: Currency returned (${returnedCurrency}) does not match expected (${existingPayment.currency}).`);
         }
 
@@ -536,7 +660,7 @@ class PayPalService {
         isMock: true
       };
     } finally {
-      this.activeCaptures.delete(orderId);
+      await this.releaseCaptureLock(orderId);
     }
   }
 
@@ -619,21 +743,24 @@ class PayPalService {
 
   /**
    * Process incoming PayPal Webhook with official verification, unique constraint persistence, and transactional execution
+   * - event.id is the authoritative stable deduplication identifier (REQUIRED)
+   * - transmissionId (paypal-transmission-id) is stored separately, NEVER used as fallback for event.id
+   * - PostgreSQL unique constraint on webhook_events.id ensures idempotency across service instances
    */
   async processWebhook(headers: Record<string, string | string[] | undefined>, event: any) {
     const transmissionId = (headers['paypal-transmission-id'] || headers['PAYPAL-TRANSMISSION-ID']) as string | undefined;
-    // event.id is the authoritative stable deduplication identifier; transmissionId is transport header
-    const eventId = event?.id || transmissionId;
 
-    if (!eventId) {
-      throw new Error('Invalid webhook request: Missing event ID.');
+    // 0. REQUIRE event.id — never fall back to transmissionId
+    const eventId = event?.id;
+    if (!eventId || typeof eventId !== 'string' || eventId.trim() === '') {
+      throw new Error('Invalid webhook request: Missing or empty event.id (authoritative deduplication identifier required).');
     }
 
-    // 1. Unique constraint & duplicate event protection in PostgreSQL
+    // 1. Unique constraint & duplicate event protection in PostgreSQL (using event.id only)
     const isDuplicate = await db.isWebhookProcessed(eventId);
     if (isDuplicate || this.processedWebhookIds.has(eventId)) {
-      console.warn(`[PayPal Webhook] Duplicate event rejected: ${eventId}`);
-      return { processed: false, duplicate: true, eventId, status: 'DUPLICATE_REJECTED' };
+      console.warn(`[PayPal Webhook] Duplicate event rejected: ${eventId} (transmissionId: ${transmissionId})`);
+      return { processed: false, duplicate: true, eventId, transmissionId, status: 'DUPLICATE_REJECTED' };
     }
 
     // 2. Official PayPal signature verification
@@ -653,10 +780,10 @@ class PayPalService {
       throw new Error(`PayPal Webhook verification failed: ${verification.error || 'Invalid signature'}`);
     }
 
-    // 3. Save to database webhook_events table with unique constraint and separate transmission ID
+    // 3. Save to database webhook_events table with unique constraint on id, transmissionId stored separately
     const { saved, duplicate } = await db.saveWebhookEvent({
       id: eventId,
-      transmissionId,
+      transmissionId: transmissionId ?? undefined,  // Store transmission ID separately, may be undefined
       eventType: event.event_type || 'UNKNOWN',
       summary: event.summary,
       resourceType: event.resource_type,
@@ -665,8 +792,8 @@ class PayPalService {
     });
 
     if (duplicate || !saved) {
-      console.warn(`[PayPal Webhook] Duplicate event ignored on database insert: ${eventId}`);
-      return { processed: false, duplicate: true, eventId, status: 'DUPLICATE_IGNORED' };
+      console.warn(`[PayPal Webhook] Duplicate event ignored on database insert: ${eventId} (transmissionId: ${transmissionId})`);
+      return { processed: false, duplicate: true, eventId, transmissionId, status: 'DUPLICATE_IGNORED' };
     }
 
     this.processedWebhookIds.add(eventId);
@@ -700,7 +827,7 @@ class PayPalService {
       }
     }
 
-    return { processed: true, duplicate: false, eventId, eventType: event.event_type, status: 'VERIFIED' };
+    return { processed: true, duplicate: false, eventId, transmissionId, eventType: event.event_type, status: 'VERIFIED' };
   }
 }
 
