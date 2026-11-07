@@ -57,6 +57,7 @@ export interface DatabaseState {
   users: UserRecord[];
   revokedTokens: { tokenHash: string; expiresAt: string }[];
   webhookEvents: any[];
+  captureAttempts: any[];
 }
 
 export const SEED_USERS: UserRecord[] = [
@@ -285,7 +286,8 @@ class DatabaseStore {
       agentRuns: [],
       users: [...SEED_USERS],
       revokedTokens: [],
-      webhookEvents: []
+      webhookEvents: [],
+      captureAttempts: []
     };
 
     this.persist(defaultState);
@@ -495,6 +497,150 @@ class DatabaseStore {
       }
     }
     return this.state.webhookEvents.some(e => e.id === eventId);
+  }
+
+  // --- CAPTURE ATTEMPTS (Distributed Locking) ---
+  /**
+   * Try to acquire a capture lock by inserting a CAPTURING record.
+   * Returns the capture attempt ID if lock acquired, null if already capturing/completed.
+   * Handles stale CAPTURING records (older than 5 minutes) by allowing takeover.
+   */
+  async tryAcquireCaptureLock(paypalOrderId: string, paymentId: string): Promise<string | null> {
+    if (this.pgPool) {
+      const client = await this.pgPool.connect();
+      try {
+        await client.query('BEGIN;');
+
+        // Check for existing capture attempt
+        const existingRes = await client.query(
+          `SELECT id, status, started_at FROM capture_attempts WHERE paypal_order_id = $1 FOR UPDATE;`,
+          [paypalOrderId]
+        );
+
+        if (existingRes.rows.length > 0) {
+          const existing = existingRes.rows[0];
+          const startedAt = new Date(existing.started_at).getTime();
+          const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+
+          if (existing.status === 'COMPLETED') {
+            await client.query('ROLLBACK;');
+            return null; // Already completed
+          }
+
+          if (existing.status === 'CAPTURING' && startedAt > fiveMinutesAgo) {
+            await client.query('ROLLBACK;');
+            return null; // Active capture in progress by another instance
+          }
+
+          // Stale CAPTURING record (older than 5 minutes) - allow takeover by updating
+          await client.query(
+            `UPDATE capture_attempts SET status = 'CAPTURING', retry_count = retry_count + 1, started_at = CURRENT_TIMESTAMP, error_message = NULL WHERE id = $1;`,
+            [existing.id]
+          );
+          await client.query('COMMIT;');
+          return existing.id;
+        }
+
+        // No existing attempt - insert new CAPTURING record
+        const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        await client.query(
+          `INSERT INTO capture_attempts (id, paypal_order_id, payment_id, status, started_at)
+           VALUES ($1, $2, $3, 'CAPTURING', CURRENT_TIMESTAMP);`,
+          [attemptId, paypalOrderId, paymentId]
+        );
+        await client.query('COMMIT;');
+        return attemptId;
+      } catch (err: any) {
+        await client.query('ROLLBACK;');
+        if (err.code === '23505') { // unique_violation on paypal_order_id
+          // Race condition - another instance inserted between SELECT and INSERT
+          return null;
+        }
+        this.handlePgError('tryAcquireCaptureLock', err);
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    // Local store fallback - simple in-memory check
+    const existing = this.state.captureAttempts?.find(c => c.paypalOrderId === paypalOrderId);
+    if (existing) {
+      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+      if (existing.status === 'COMPLETED' || (existing.status === 'CAPTURING' && new Date(existing.startedAt).getTime() > fiveMinutesAgo)) {
+        return null;
+      }
+      // Stale - allow takeover
+      existing.status = 'CAPTURING';
+      existing.retryCount = (existing.retryCount || 0) + 1;
+      existing.startedAt = new Date().toISOString();
+      existing.errorMessage = null;
+      return existing.id;
+    }
+
+    const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    if (!this.state.captureAttempts) this.state.captureAttempts = [];
+    this.state.captureAttempts.push({
+      id: attemptId,
+      paypalOrderId,
+      paymentId,
+      status: 'CAPTURING',
+      startedAt: new Date().toISOString(),
+      retryCount: 0
+    });
+    this.save();
+    return attemptId;
+  }
+
+  async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string): Promise<void> {
+    if (this.pgPool) {
+      try {
+        if (error) {
+          await this.pgPool.query(
+            `UPDATE capture_attempts SET status = 'FAILED', error_message = $1, completed_at = CURRENT_TIMESTAMP WHERE id = $2;`,
+            [error, attemptId]
+          );
+        } else {
+          await this.pgPool.query(
+            `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP WHERE id = $2;`,
+            [paypalCaptureId, attemptId]
+          );
+        }
+        return;
+      } catch (err) {
+        this.handlePgError('completeCaptureAttempt', err);
+        throw err;
+      }
+    }
+
+    const idx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
+    if (idx !== undefined && idx >= 0) {
+      if (error) {
+        this.state.captureAttempts[idx].status = 'FAILED';
+        this.state.captureAttempts[idx].errorMessage = error;
+      } else {
+        this.state.captureAttempts[idx].status = 'COMPLETED';
+        this.state.captureAttempts[idx].paypalCaptureId = paypalCaptureId;
+      }
+      this.state.captureAttempts[idx].completedAt = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  async getCaptureAttemptByOrderId(paypalOrderId: string): Promise<any> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(
+          `SELECT * FROM capture_attempts WHERE paypal_order_id = $1;`,
+          [paypalOrderId]
+        );
+        return res.rows[0] || null;
+      } catch (err) {
+        this.handlePgError('getCaptureAttemptByOrderId', err);
+        throw err;
+      }
+    }
+    return this.state.captureAttempts?.find(c => c.paypalOrderId === paypalOrderId) || null;
   }
 
   // --- PRODUCTS ---

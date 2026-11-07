@@ -86,18 +86,41 @@ jobs:
         run: npm --prefix frontend run lint
 
       - name: Execute Member 2 (Demand Forecasting) Unit Tests
-        run: npm --prefix intelligence test
+        id: intel-tests
+        run: |
+          npm --prefix intelligence test 2>&1 | tee intelligence-test-output.txt
+          PASSED=$(grep -c "✓" intelligence-test-output.txt || true)
+          FAILED=$(grep -c "✕" intelligence-test-output.txt || true)
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ Intelligence tests failed: $FAILED failures"
+            exit 1
+          fi
+          echo "intel_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "intel_failed=$FAILED" >> $GITHUB_OUTPUT
 
       - name: Execute Member 4 (Supplier Scoring & Budget Optimization) Tests
-        run: npm --prefix supplier-intelligence test
+        id: supplier-tests
+        run: |
+          npm --prefix supplier-intelligence test 2>&1 | tee supplier-test-output.txt
+          PASSED=$(grep -c "✓" supplier-test-output.txt || true)
+          FAILED=$(grep -c "✕" supplier-test-output.txt || true)
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ Supplier Intelligence tests failed: $FAILED failures"
+            exit 1
+          fi
+          echo "supplier_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "supplier_failed=$FAILED" >> $GITHUB_OUTPUT
 
       - name: Execute Member 3 (Backend API, Auth, Database & PayPal) Tests
         id: backend-tests
         run: |
           npm --prefix backend test 2>&1 | tee backend-test-output.txt
-          # Extract test count from output
           PASSED=$(grep -c "✓" backend-test-output.txt || true)
           FAILED=$(grep -c "✕" backend-test-output.txt || true)
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ Backend tests failed: $FAILED failures"
+            exit 1
+          fi
           echo "backend_passed=$PASSED" >> $GITHUB_OUTPUT
           echo "backend_failed=$FAILED" >> $GITHUB_OUTPUT
 
@@ -115,9 +138,12 @@ jobs:
       - name: Publish Test & Verification Summary to Step Summary
         if: always()
         run: |
-          INTEL_PASSED=$(grep -c "✓" intelligence-test-output.txt 2>/dev/null || echo "7")
-          SUPP_PASSED=$(grep -c "✓" supplier-test-output.txt 2>/dev/null || echo "13")
-          BACK_PASSED=${{ steps.backend-tests.outputs.backend_passed || 36 }}
+          INTEL_PASSED=${{ steps.intel-tests.outputs.intel_passed || 0 }}
+          SUPP_PASSED=${{ steps.supplier-tests.outputs.supplier_passed || 0 }}
+          BACK_PASSED=${{ steps.backend-tests.outputs.backend_passed || 0 }}
+          if [ "$INTEL_PASSED" = "0" ] || [ "$SUPP_PASSED" = "0" ] || [ "$BACK_PASSED" = "0" ]; then
+            echo "⚠️ Warning: Test counts not available from previous steps"
+          fi
           echo "### StockWise Pay CI Pipeline Results 🚀" >> $GITHUB_STEP_SUMMARY
           echo "- **Demand Forecasting (Intelligence)**: ${INTEL_PASSED} Tests Passed" >> $GITHUB_STEP_SUMMARY
           echo "- **Supplier & Budget Optimization**: ${SUPP_PASSED} Tests Passed" >> $GITHUB_STEP_SUMMARY

@@ -12,7 +12,7 @@
 StockWise Pay is an AI-assisted, budget-aware replenishment and checkout platform for independent electronics retailers. It integrates inventory demand forecasting (EMA), multi-criteria supplier evaluation, knapsack-based budget optimization, version-locked managerial approvals, and server-side PayPal Sandbox Orders v2 capture.
 
 - **Overall Project Readiness:** **READY FOR SANDBOX DEMONSTRATION ONLY**  
-  The full end-to-end procurement and payment pipeline is operational, tested, and reproducible. All **58 automated unit, integration, and security tests** pass across all three core modules (`intelligence`, `supplier-intelligence`, `backend`). Frontend compiles cleanly with static page pre-rendering and edge middleware redirect guards.
+  The full end-to-end procurement and payment pipeline is operational, tested, and reproducible. All **64 automated unit, integration, and security tests** pass across all three core modules (`intelligence`, `supplier-intelligence`, `backend`). Frontend compiles cleanly with static page pre-rendering and edge middleware redirect guards.
 - **Major Strengths:**
   1. **Strict Version-Locked Approval Gate:** Modifying any plan item, quantity, or budget immediately increments the plan version and invalidates prior approvals. Unapproved or modified plans strictly cannot generate PayPal orders (`400 Bad Request`).
   2. **Cryptographic JWT Authentication & RBAC:** Tokens are HMAC-SHA256 signed using Node.js `crypto` with `timingSafeEqual` constant-time verification. Arbitrary self-registration is strictly rejected (`401 Invalid Credentials`). Role permissions (`requireRole`, `requirePermission`) forbid unauthorized actors (e.g., Buyer role cannot approve plans or execute PayPal captures).
@@ -50,7 +50,7 @@ Stockwise-Pay/
 │   │   ├── services/           - paypal.ts (Orders v2 API, concurrency lock, webhook validation)
 │   │   │                         agent.ts (6-tool orchestration, grounded explanations)
 │   │   └── db/                 - Supabase/PostgreSQL pool, migrations, atomic payment transactions
-│   ├── tests/api.test.ts       - 29 integration and security tests (All Passing)
+│   ├── tests/api.test.ts       - 44 integration and security tests (All Passing)
 │   └── package.json
 └── frontend/                   [Member 1: Next.js 14 App Router UI]
     ├── src/
@@ -87,7 +87,7 @@ Stockwise-Pay/
   - Recommended replenishment: $\max(0, \text{targetStock} - \text{currentStock})$.
 
 ### Member 3 — Backend, Database & PayPal Integration
-- **Status:** Complete & Verified (29/29 tests passing).
+- **Status:** Complete & Verified (44/44 tests passing).
 - **Key Deliverables:**
   - RESTful Express server with strict route validation.
   - Cryptographic HMAC-SHA256 JWT tokens with `timingSafeEqual` verification and token revocation list on logout.
@@ -127,17 +127,17 @@ Test Suite Execution Results:
 =======================================================
 1. intelligence Module:
    Command: npm --prefix intelligence test
-   Result: 7 tests passed, 0 failed, 0 skipped (duration: ~222ms)
+   Result: 7 tests passed, 0 failed, 0 skipped (duration: ~240ms)
    Coverage: EMA forecasting, stockout risk bounds, demand analysis
 
 2. supplier-intelligence Module:
    Command: npm --prefix supplier-intelligence test
-   Result: 13 tests passed, 0 failed, 0 skipped (duration: ~266ms)
+   Result: 13 tests passed, 0 failed, 0 skipped (duration: ~274ms)
    Coverage: compare_suppliers, optimize_budget, simulate_purchase_plan, explain_purchase_plan
 
 3. backend Module:
    Command: npm --prefix backend test
-   Result: 29 tests passed, 0 failed, 0 skipped (duration: ~53s)
+   Result: 44 tests passed, 0 failed, 0 skipped (duration: ~120s)
    Coverage: Health, auth enforcement (missing/invalid/malformed/forged tokens),
              arbitrary login rejection, registered persona login with HMAC JWT,
              RBAC buyer approval rejection (Elena 403), RBAC buyer payment rejection (Elena 403),
@@ -148,9 +148,11 @@ Test Suite Execution Results:
              full approve->order->capture->audit lifecycle, idempotent recapture,
              plan recalculation version invalidation, PayPal missing/invalid plan gates,
              CSV import validations (valid, empty, missing headers, no-body),
-             AI agent full analysis & simulation
+             AI agent full analysis & simulation,
+             Payment authorization: role restrictions on /payments, resource-level auth on /payments/:id/status,
+             Buyer access to payment status for their plan
 
-Total Automated Tests: 49 PASSED / 0 FAILED (100% Pass Rate)
+Total Automated Tests: 64 PASSED / 0 FAILED (100% Pass Rate)
 =======================================================
 ```
 

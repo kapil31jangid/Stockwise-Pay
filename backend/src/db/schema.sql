@@ -177,4 +177,21 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Capture state table for distributed locking across service instances
+-- Ensures exactly one capture per PayPal order across multiple backend instances
+CREATE TABLE IF NOT EXISTS capture_attempts (
+  id VARCHAR(50) PRIMARY KEY,
+  paypal_order_id VARCHAR(100) NOT NULL UNIQUE,
+  payment_id VARCHAR(50) NOT NULL REFERENCES payments(id),
+  status VARCHAR(50) NOT NULL DEFAULT 'CAPTURING', -- CAPTURING, COMPLETED, FAILED
+  paypal_capture_id VARCHAR(100),
+  error_message TEXT,
+  started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP WITH TIME ZONE,
+  retry_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_attempts_payment_id ON capture_attempts(payment_id);
+CREATE INDEX IF NOT EXISTS idx_capture_attempts_status_started ON capture_attempts(status, started_at);
+
 
