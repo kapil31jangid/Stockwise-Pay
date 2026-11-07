@@ -40,6 +40,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       })),
       deferredItems: optResult.unfundedItems,
       scenarioMode: (preference.toLowerCase() === 'fastest' ? 'aggressive' : preference.toLowerCase() === 'cheapest' ? 'conservative' : 'balanced') as any,
+      createdByUserId: req.user?.id, // Track plan creator for resource-level authorization
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };

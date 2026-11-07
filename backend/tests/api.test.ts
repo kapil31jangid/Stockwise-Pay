@@ -971,3 +971,257 @@ test('Payment Status: Buyer can access payment status for their plan', async () 
   assert.equal(statusRes.status, 200);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BUYER PAYMENT AUTHORIZATION TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Payment Status: Buyer CANNOT view another buyer payment status by internal ID', async () => {
+  // 1. Buyer 1 (Elena) generates a plan
+  const buyer1AuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyerToken}`
+  };
+  const buyer1Fetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...buyer1AuthHeaders, ...(init?.headers || {}) } });
+
+  const genRes1 = await buyer1Fetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData1 = await genRes1.json() as any;
+  const planId1 = genData1.plan.id;
+
+  // 2. Approve as approver
+  await authFetch(`${baseUrl}/api/plans/${planId1}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  // 3. Create order as approver
+  const orderRes1 = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId: planId1 })
+  });
+  const orderData1 = await orderRes1.json() as any;
+  const paypalOrderId1 = orderData1.data.orderId;
+
+  // 4. Capture payment
+  const capRes1 = await authFetch(`${baseUrl}/api/paypal/orders/${paypalOrderId1}/capture`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+  const capData1 = await capRes1.json() as any;
+  const paymentId1 = capData1.data.captureId;
+
+  // 5. Create a second buyer token (simulate another buyer)
+  const buyer2Token = signAuthToken({
+    id: 'USR-004',
+    name: 'Another Buyer',
+    email: 'buyer2@stockwisepay.com',
+    role: 'BUYER',
+    permissions: ['INVENTORY_VIEW', 'SUPPLIERS_COMPARE', 'PLAN_GENERATE']
+  });
+  const buyer2AuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyer2Token}`
+  };
+  const buyer2Fetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...buyer2AuthHeaders, ...(init?.headers || {}) } });
+
+  // 6. Buyer 2 tries to access Buyer 1's payment by internal payment ID
+  // First need to get the internal payment ID - use the payment status endpoint with PayPal order ID
+  // which returns the payment ID in the response
+  const statusRes1 = await buyer1Fetch(`${baseUrl}/api/paypal/payments/${paypalOrderId1}/status`);
+  const statusData1 = await statusRes1.json() as any;
+  const internalPaymentId = statusData1.data.paymentId;
+
+  // 7. Buyer 2 tries to access the payment by internal ID - should get 404
+  const res = await buyer2Fetch(`${baseUrl}/api/paypal/payments/${internalPaymentId}/status`);
+  assert.equal(res.status, 404);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('Payment Status: Buyer CANNOT view another buyer payment status by PayPal order ID', async () => {
+  // Use the same setup as above - Buyer 1's paypalOrderId1
+  // Buyer 2 tries to access by PayPal order ID
+  const buyer2Token = signAuthToken({
+    id: 'USR-004',
+    name: 'Another Buyer',
+    email: 'buyer2@stockwisepay.com',
+    role: 'BUYER',
+    permissions: ['INVENTORY_VIEW', 'SUPPLIERS_COMPARE', 'PLAN_GENERATE']
+  });
+  const buyer2AuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyer2Token}`
+  };
+  const buyer2Fetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...buyer2AuthHeaders, ...(init?.headers || {}) } });
+
+  // We need to get the paypalOrderId1 from the previous test context
+  // Re-create the scenario here for isolation
+  const buyer1AuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyerToken}`
+  };
+  const buyer1Fetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...buyer1AuthHeaders, ...(init?.headers || {}) } });
+
+  const genRes1 = await buyer1Fetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData1 = await genRes1.json() as any;
+  const planId1 = genData1.plan.id;
+
+  await authFetch(`${baseUrl}/api/plans/${planId1}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  const orderRes1 = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId: planId1 })
+  });
+  const orderData1 = await orderRes1.json() as any;
+  const paypalOrderId1 = orderData1.data.orderId;
+
+  await authFetch(`${baseUrl}/api/paypal/orders/${paypalOrderId1}/capture`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+
+  // Buyer 2 tries to access by PayPal order ID - should get 404
+  const res = await buyer2Fetch(`${baseUrl}/api/paypal/payments/${paypalOrderId1}/status`);
+  assert.equal(res.status, 404);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('Payment Status: Approver CAN view any buyer payment status by internal ID', async () => {
+  // 1. Buyer 1 (Elena) generates a plan
+  const buyer1AuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyerToken}`
+  };
+  const buyer1Fetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...buyer1AuthHeaders, ...(init?.headers || {}) } });
+
+  const genRes1 = await buyer1Fetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData1 = await genRes1.json() as any;
+  const planId1 = genData1.plan.id;
+
+  // 2. Approve as approver
+  await authFetch(`${baseUrl}/api/plans/${planId1}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  // 3. Create order as approver
+  const orderRes1 = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId: planId1 })
+  });
+  const orderData1 = await orderRes1.json() as any;
+  const paypalOrderId1 = orderData1.data.orderId;
+
+  // 4. Capture payment
+  await authFetch(`${baseUrl}/api/paypal/orders/${paypalOrderId1}/capture`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+
+  // 5. Get internal payment ID
+  const statusRes1 = await buyer1Fetch(`${baseUrl}/api/paypal/payments/${paypalOrderId1}/status`);
+  const statusData1 = await statusRes1.json() as any;
+  const internalPaymentId = statusData1.data.paymentId;
+
+  // 6. Approver (Marcus) accesses by internal ID - should succeed
+  const res = await authFetch(`${baseUrl}/api/paypal/payments/${internalPaymentId}/status`);
+  assert.equal(res.status, 200);
+  const data = await res.json() as any;
+  assert.equal(data.success, true);
+  assert.equal(data.data.paypalOrderId, paypalOrderId1);
+});
+
+test('Payment Status: Treasury CAN view any buyer payment status by PayPal order ID', async () => {
+  // 1. Buyer 1 (Elena) generates a plan
+  const buyer1AuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${buyerToken}`
+  };
+  const buyer1Fetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...buyer1AuthHeaders, ...(init?.headers || {}) } });
+
+  const genRes1 = await buyer1Fetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData1 = await genRes1.json() as any;
+  const planId1 = genData1.plan.id;
+
+  // 2. Approve as approver
+  await authFetch(`${baseUrl}/api/plans/${planId1}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  // 3. Create order as approver
+  const orderRes1 = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId: planId1 })
+  });
+  const orderData1 = await orderRes1.json() as any;
+  const paypalOrderId1 = orderData1.data.orderId;
+
+  // 4. Capture payment
+  await authFetch(`${baseUrl}/api/paypal/orders/${paypalOrderId1}/capture`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+
+  // 5. Treasury (David) accesses by PayPal order ID - should succeed
+  const treasuryAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${treasuryToken}`
+  };
+  const treasuryFetch = (url: string, init?: RequestInit) => fetch(url, { ...init, headers: { ...treasuryAuthHeaders, ...(init?.headers || {}) } });
+
+  const res = await treasuryFetch(`${baseUrl}/api/paypal/payments/${paypalOrderId1}/status`);
+  assert.equal(res.status, 200);
+  const data = await res.json() as any;
+  assert.equal(data.success, true);
+  assert.equal(data.data.paypalOrderId, paypalOrderId1);
+});
+
+test('Payment Status: Unauthenticated access remains rejected', async () => {
+  // Create a valid payment first
+  const genRes = await authFetch(`${baseUrl}/api/plans/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ budget: 500, preference: 'BALANCED' })
+  });
+  const genData = await genRes.json() as any;
+  const planId = genData.plan.id;
+
+  await authFetch(`${baseUrl}/api/plans/${planId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ approverName: 'Marcus Vance' })
+  });
+
+  const orderRes = await authFetch(`${baseUrl}/api/paypal/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ planId })
+  });
+  const orderData = await orderRes.json() as any;
+  const paypalOrderId = orderData.data.orderId;
+
+  await authFetch(`${baseUrl}/api/paypal/orders/${paypalOrderId}/capture`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+
+  // Unauthenticated access should return 401
+  const res = await fetch(`${baseUrl}/api/paypal/payments/${paypalOrderId}/status`);
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+

@@ -27,15 +27,34 @@ export interface CaptureOrderResult {
 
 class PayPalService {
   private processedWebhookIds = new Set<string>();
+  private instanceId = `instance-${process.pid}-${Date.now()}`;
 
   /**
-   * Try to acquire a distributed capture lock using the capture_attempts table.
+   * Try to acquire a distributed capture lock using the capture_attempts table with lease/heartbeat.
    * Returns the capture attempt ID if lock acquired, null if already capturing/completed by another instance.
-   * Uses atomic INSERT with unique constraint on paypal_order_id for cross-instance mutual exclusion.
-   * Handles stale CAPTURING records (older than 5 minutes) by allowing safe takeover.
+   * Returns "RECONCILE:<attemptId>" if reconciliation with PayPal is needed before takeover.
+   * Uses lease/heartbeat mechanism: active lease prevents takeover; expired lease requires
+   * reconciliation with live PayPal state before safe takeover.
    */
   private async tryAcquireCaptureLock(paypalOrderId: string, paymentId: string): Promise<string | null> {
-    return await db.tryAcquireCaptureLock(paypalOrderId, paymentId);
+    const paypalRequestId = `CAP-${paypalOrderId}`;
+    return await db.tryAcquireCaptureLock(paypalOrderId, paymentId, this.instanceId, paypalRequestId);
+  }
+
+  /**
+   * Renew the lease for an active capture attempt (heartbeat).
+   * Called periodically during long-running PayPal capture operations.
+   */
+  private async renewCaptureLease(attemptId: string): Promise<boolean> {
+    return await db.renewCaptureLease(attemptId, this.instanceId);
+  }
+
+  /**
+   * Reconcile a stale capture attempt with live PayPal state before takeover.
+   * Returns the existing capture ID if already completed, null if safe to proceed.
+   */
+  private async reconcileCaptureAttempt(paypalOrderId: string, existingAttemptId: string): Promise<string | null> {
+    return await db.reconcileCaptureAttempt(paypalOrderId, existingAttemptId);
   }
 
   /**
@@ -43,6 +62,22 @@ class PayPalService {
    */
   private async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string): Promise<void> {
     await db.completeCaptureAttempt(attemptId, paypalCaptureId, error);
+  }
+
+  /**
+   * Start a heartbeat interval for a capture attempt.
+   * Returns a cleanup function to stop the heartbeat.
+   */
+  private startCaptureHeartbeat(attemptId: string): () => void {
+    const interval = setInterval(async () => {
+      try {
+        await this.renewCaptureLease(attemptId);
+      } catch (err) {
+        console.warn(`[PayPal] Heartbeat failed for attempt ${attemptId}:`, err);
+      }
+    }, 2 * 60 * 1000); // Renew every 2 minutes (lease is 5 minutes)
+
+    return () => clearInterval(interval);
   }
 
   /**
@@ -292,7 +327,8 @@ class PayPalService {
    * Amount/Version Verification, and Fail-Closed State Checking.
    * Uses atomic INSERT with unique constraint on paypal_order_id for cross-instance mutual exclusion.
    * PayPal-Request-Id header provides API-level idempotency.
-   * Stale CAPTURING records (older than 5 minutes) allow safe takeover and reconciliation.
+   * Lease/heartbeat mechanism prevents premature takeover of long-running captures.
+   * Expired leases require reconciliation with live PayPal state before safe takeover.
    */
   async captureOrder(orderId: string, actor: string): Promise<CaptureOrderResult> {
     // 1. Get payment record first
@@ -316,7 +352,32 @@ class PayPalService {
     }
 
     // 3. Try to acquire distributed capture lock via capture_attempts table
-    const attemptId = await this.tryAcquireCaptureLock(orderId, existingPayment.id);
+    let attemptId = await this.tryAcquireCaptureLock(orderId, existingPayment.id);
+
+    // Handle reconciliation case
+    if (attemptId?.startsWith('RECONCILE:')) {
+      const existingAttemptId = attemptId.substring('RECONCILE:'.length);
+      const existingCaptureId = await this.reconcileCaptureAttempt(orderId, existingAttemptId);
+      if (existingCaptureId) {
+        // Already completed by another instance - return the existing capture
+        const payment = await db.getPayment(existingPayment.id);
+        if (payment) {
+          return {
+            captureId: existingCaptureId,
+            orderId: existingPayment.paypalOrderId,
+            status: 'COMPLETED',
+            amount: payment.amount,
+            currency: payment.currency,
+            payerEmail: payment.payerEmail || 'buyer-retail@stockwise.test',
+            transactionTime: payment.updatedAt,
+            isMock: payment.paymentMethod.includes('Simulated')
+          };
+        }
+      }
+      // Reconciliation complete, safe to retry lock acquisition
+      attemptId = await this.tryAcquireCaptureLock(orderId, existingPayment.id);
+    }
+
     if (!attemptId) {
       // Check if already completed by another instance
       const existingAttempt = await db.getCaptureAttemptByOrderId(orderId);
@@ -423,15 +484,23 @@ class PayPalService {
       }
     }
 
-    // Step D: Execute server capture with idempotency header
-    const res = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'PayPal-Request-Id': `CAP-${orderId}`
-      }
-    });
+    // Start heartbeat to keep lease alive during long-running capture
+    const stopHeartbeat = this.startCaptureHeartbeat(attemptId);
+
+    let res: Response;
+    try {
+      // Step D: Execute server capture with idempotency header
+      res = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'PayPal-Request-Id': `CAP-${orderId}`
+        }
+      });
+    } finally {
+      stopHeartbeat();
+    }
 
     if (!res.ok) {
       const errorText = await res.text();

@@ -162,9 +162,10 @@ router.get('/payments/:id/status', async (req: Request, res: Response) => {
       if (!plan) {
         return res.status(404).json({ success: false, error: `Associated plan not found` });
       }
-      // For BUYER role, we check if they have access - in this system, BUYERs can view
-      // payments for plans they generated. Since we don't track plan creator, we allow
-      // BUYERs to view payment status but not the full ledger.
+      // Enforce ownership: BUYER can only view payments for plans they created
+      if (plan.createdByUserId !== userId) {
+        return res.status(404).json({ success: false, error: `Payment record not found: ${id}` });
+      }
     }
 
     res.json({

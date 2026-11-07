@@ -88,11 +88,13 @@ jobs:
       - name: Execute Member 2 (Demand Forecasting) Unit Tests
         id: intel-tests
         run: |
+          set -euo pipefail
           npm --prefix intelligence test 2>&1 | tee intelligence-test-output.txt
-          PASSED=$(grep -c "✓" intelligence-test-output.txt || true)
-          FAILED=$(grep -c "✕" intelligence-test-output.txt || true)
-          if [ "$FAILED" -gt 0 ]; then
-            echo "❌ Intelligence tests failed: $FAILED failures"
+          # Parse test runner summary (tsx --test outputs: "ℹ tests N", "ℹ pass N", "ℹ fail N")
+          PASSED=$(grep -E "^\s*ℹ\s+pass\s+" intelligence-test-output.txt | tail -1 | sed -E 's/.*pass\s+([0-9]+).*/\1/' || echo "0")
+          FAILED=$(grep -E "^\s*ℹ\s+fail\s+" intelligence-test-output.txt | tail -1 | sed -E 's/.*fail\s+([0-9]+).*/\1/' || echo "0")
+          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ]; then
+            echo "❌ Intelligence tests failed: $FAILED failures, $PASSED passed"
             exit 1
           fi
           echo "intel_passed=$PASSED" >> $GITHUB_OUTPUT
@@ -101,11 +103,12 @@ jobs:
       - name: Execute Member 4 (Supplier Scoring & Budget Optimization) Tests
         id: supplier-tests
         run: |
+          set -euo pipefail
           npm --prefix supplier-intelligence test 2>&1 | tee supplier-test-output.txt
-          PASSED=$(grep -c "✓" supplier-test-output.txt || true)
-          FAILED=$(grep -c "✕" supplier-test-output.txt || true)
-          if [ "$FAILED" -gt 0 ]; then
-            echo "❌ Supplier Intelligence tests failed: $FAILED failures"
+          PASSED=$(grep -E "^\s*ℹ\s+pass\s+" supplier-test-output.txt | tail -1 | sed -E 's/.*pass\s+([0-9]+).*/\1/' || echo "0")
+          FAILED=$(grep -E "^\s*ℹ\s+fail\s+" supplier-test-output.txt | tail -1 | sed -E 's/.*fail\s+([0-9]+).*/\1/' || echo "0")
+          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ]; then
+            echo "❌ Supplier Intelligence tests failed: $FAILED failures, $PASSED passed"
             exit 1
           fi
           echo "supplier_passed=$PASSED" >> $GITHUB_OUTPUT
@@ -114,11 +117,12 @@ jobs:
       - name: Execute Member 3 (Backend API, Auth, Database & PayPal) Tests
         id: backend-tests
         run: |
+          set -euo pipefail
           npm --prefix backend test 2>&1 | tee backend-test-output.txt
-          PASSED=$(grep -c "✓" backend-test-output.txt || true)
-          FAILED=$(grep -c "✕" backend-test-output.txt || true)
-          if [ "$FAILED" -gt 0 ]; then
-            echo "❌ Backend tests failed: $FAILED failures"
+          PASSED=$(grep -E "^\s*ℹ\s+pass\s+" backend-test-output.txt | tail -1 | sed -E 's/.*pass\s+([0-9]+).*/\1/' || echo "0")
+          FAILED=$(grep -E "^\s*ℹ\s+fail\s+" backend-test-output.txt | tail -1 | sed -E 's/.*fail\s+([0-9]+).*/\1/' || echo "0")
+          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ]; then
+            echo "❌ Backend tests failed: $FAILED failures, $PASSED passed"
             exit 1
           fi
           echo "backend_passed=$PASSED" >> $GITHUB_OUTPUT

@@ -499,13 +499,15 @@ class DatabaseStore {
     return this.state.webhookEvents.some(e => e.id === eventId);
   }
 
-  // --- CAPTURE ATTEMPTS (Distributed Locking) ---
+  // --- CAPTURE ATTEMPTS (Distributed Locking with Lease/Heartbeat) ---
   /**
-   * Try to acquire a capture lock by inserting a CAPTURING record.
+   * Try to acquire a capture lock by inserting a CAPTURING record with lease.
    * Returns the capture attempt ID if lock acquired, null if already capturing/completed.
-   * Handles stale CAPTURING records (older than 5 minutes) by allowing takeover.
+   * Returns "RECONCILE:<attemptId>" if reconciliation with PayPal is needed before takeover.
+   * Uses lease/heartbeat mechanism: active lease prevents takeover; expired lease requires
+   * reconciliation with live PayPal state before safe takeover.
    */
-  async tryAcquireCaptureLock(paypalOrderId: string, paymentId: string): Promise<string | null> {
+  async tryAcquireCaptureLock(paypalOrderId: string, paymentId: string, instanceId: string, paypalRequestId: string): Promise<string | null> {
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
@@ -513,40 +515,64 @@ class DatabaseStore {
 
         // Check for existing capture attempt
         const existingRes = await client.query(
-          `SELECT id, status, started_at FROM capture_attempts WHERE paypal_order_id = $1 FOR UPDATE;`,
+          `SELECT id, status, started_at, lease_expires_at, lease_owner, paypal_capture_id, paypal_request_id
+           FROM capture_attempts WHERE paypal_order_id = $1 FOR UPDATE;`,
           [paypalOrderId]
         );
 
         if (existingRes.rows.length > 0) {
           const existing = existingRes.rows[0];
-          const startedAt = new Date(existing.started_at).getTime();
-          const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+          const now = new Date();
 
           if (existing.status === 'COMPLETED') {
             await client.query('ROLLBACK;');
             return null; // Already completed
           }
 
-          if (existing.status === 'CAPTURING' && startedAt > fiveMinutesAgo) {
+          // Check if lease is still active
+          const leaseExpiresAt = existing.lease_expires_at ? new Date(existing.lease_expires_at).getTime() : 0;
+          const isLeaseActive = leaseExpiresAt > now.getTime();
+
+          if (existing.status === 'CAPTURING' && isLeaseActive) {
+            // Active lease held by another instance - cannot acquire
             await client.query('ROLLBACK;');
-            return null; // Active capture in progress by another instance
+            return null;
           }
 
-          // Stale CAPTURING record (older than 5 minutes) - allow takeover by updating
+          // Lease expired or no lease - need to reconcile before takeover
+          // If there's a paypal_capture_id or paypal_request_id, reconcile with PayPal first
+          if (existing.paypal_capture_id || existing.paypal_request_id) {
+            await client.query('ROLLBACK;');
+            // Return special marker indicating reconciliation needed
+            return `RECONCILE:${existing.id}`;
+          }
+
+          // Safe to take over stale attempt - update with new lease
+          const newLeaseExpires = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
           await client.query(
-            `UPDATE capture_attempts SET status = 'CAPTURING', retry_count = retry_count + 1, started_at = CURRENT_TIMESTAMP, error_message = NULL WHERE id = $1;`,
-            [existing.id]
+            `UPDATE capture_attempts
+             SET status = 'CAPTURING',
+                 retry_count = retry_count + 1,
+                 started_at = CURRENT_TIMESTAMP,
+                 error_message = NULL,
+                 lease_expires_at = $1,
+                 last_heartbeat_at = CURRENT_TIMESTAMP,
+                 lease_owner = $2,
+                 paypal_request_id = $3
+             WHERE id = $4;`,
+            [newLeaseExpires, instanceId, paypalRequestId, existing.id]
           );
           await client.query('COMMIT;');
           return existing.id;
         }
 
-        // No existing attempt - insert new CAPTURING record
+        // No existing attempt - insert new CAPTURING record with lease
         const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const leaseExpires = new Date(Date.now() + 5 * 60 * 1000).toISOString();
         await client.query(
-          `INSERT INTO capture_attempts (id, paypal_order_id, payment_id, status, started_at)
-           VALUES ($1, $2, $3, 'CAPTURING', CURRENT_TIMESTAMP);`,
-          [attemptId, paypalOrderId, paymentId]
+          `INSERT INTO capture_attempts (id, paypal_order_id, payment_id, status, started_at, lease_expires_at, last_heartbeat_at, lease_owner, paypal_request_id)
+           VALUES ($1, $2, $3, 'CAPTURING', CURRENT_TIMESTAMP, $4, CURRENT_TIMESTAMP, $5, $6);`,
+          [attemptId, paypalOrderId, paymentId, leaseExpires, instanceId, paypalRequestId]
         );
         await client.query('COMMIT;');
         return attemptId;
@@ -563,17 +589,26 @@ class DatabaseStore {
       }
     }
 
-    // Local store fallback - simple in-memory check
+    // Local store fallback - simple in-memory check with lease
     const existing = this.state.captureAttempts?.find(c => c.paypalOrderId === paypalOrderId);
+    const now = Date.now();
     if (existing) {
-      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-      if (existing.status === 'COMPLETED' || (existing.status === 'CAPTURING' && new Date(existing.startedAt).getTime() > fiveMinutesAgo)) {
+      const leaseExpiresAt = existing.leaseExpiresAt ? new Date(existing.leaseExpiresAt).getTime() : 0;
+      const isLeaseActive = leaseExpiresAt > now;
+      if (existing.status === 'COMPLETED' || (existing.status === 'CAPTURING' && isLeaseActive)) {
         return null;
       }
-      // Stale - allow takeover
+      if (existing.paypalCaptureId || existing.paypalRequestId) {
+        return `RECONCILE:${existing.id}`;
+      }
+      // Stale - allow takeover with new lease
       existing.status = 'CAPTURING';
       existing.retryCount = (existing.retryCount || 0) + 1;
       existing.startedAt = new Date().toISOString();
+      existing.leaseExpiresAt = new Date(now + 5 * 60 * 1000).toISOString();
+      existing.lastHeartbeatAt = new Date().toISOString();
+      existing.leaseOwner = instanceId;
+      existing.paypalRequestId = paypalRequestId;
       existing.errorMessage = null;
       return existing.id;
     }
@@ -586,10 +621,79 @@ class DatabaseStore {
       paymentId,
       status: 'CAPTURING',
       startedAt: new Date().toISOString(),
+      leaseExpiresAt: new Date(now + 5 * 60 * 1000).toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      leaseOwner: instanceId,
+      paypalRequestId: paypalRequestId,
       retryCount: 0
     });
     this.save();
     return attemptId;
+  }
+
+  /**
+   * Renew the lease for an active capture attempt (heartbeat).
+   * Called periodically during long-running PayPal capture operations.
+   */
+  async renewCaptureLease(attemptId: string, instanceId: string): Promise<boolean> {
+    if (this.pgPool) {
+      try {
+        const result = await this.pgPool.query(
+          `UPDATE capture_attempts
+           SET lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '5 minutes',
+               last_heartbeat_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND lease_owner = $2 AND status = 'CAPTURING'
+           RETURNING id;`,
+          [attemptId, instanceId]
+        );
+        return result.rowCount !== null && result.rowCount > 0;
+      } catch (err) {
+        this.handlePgError('renewCaptureLease', err);
+        throw err;
+      }
+    }
+    // Local fallback
+    const existing = this.state.captureAttempts?.find(c => c.id === attemptId);
+    if (existing && existing.leaseOwner === instanceId && existing.status === 'CAPTURING') {
+      existing.leaseExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      existing.lastHeartbeatAt = new Date().toISOString();
+      this.save();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Reconcile a stale capture attempt with live PayPal state before takeover.
+   * Returns the existing capture ID if already completed, null if safe to proceed.
+   */
+  async reconcileCaptureAttempt(paypalOrderId: string, existingAttemptId: string): Promise<string | null> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(
+          `SELECT paypal_capture_id, paypal_request_id, status FROM capture_attempts WHERE id = $1;`,
+          [existingAttemptId]
+        );
+        if (res.rows.length > 0) {
+          const attempt = res.rows[0];
+          if (attempt.status === 'COMPLETED' && attempt.paypal_capture_id) {
+            return attempt.paypal_capture_id; // Already completed, return capture ID
+          }
+          // For stale CAPTURING without capture ID, return null to allow takeover after reconciliation
+          // The caller should verify with PayPal API before proceeding
+        }
+        return null;
+      } catch (err) {
+        this.handlePgError('reconcileCaptureAttempt', err);
+        throw err;
+      }
+    }
+    // Local fallback
+    const existing = this.state.captureAttempts?.find(c => c.id === existingAttemptId);
+    if (existing && existing.status === 'COMPLETED' && existing.paypalCaptureId) {
+      return existing.paypalCaptureId;
+    }
+    return null;
   }
 
   async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string): Promise<void> {
@@ -597,12 +701,12 @@ class DatabaseStore {
       try {
         if (error) {
           await this.pgPool.query(
-            `UPDATE capture_attempts SET status = 'FAILED', error_message = $1, completed_at = CURRENT_TIMESTAMP WHERE id = $2;`,
+            `UPDATE capture_attempts SET status = 'FAILED', error_message = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
             [error, attemptId]
           );
         } else {
           await this.pgPool.query(
-            `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP WHERE id = $2;`,
+            `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
             [paypalCaptureId, attemptId]
           );
         }
@@ -623,6 +727,8 @@ class DatabaseStore {
         this.state.captureAttempts[idx].paypalCaptureId = paypalCaptureId;
       }
       this.state.captureAttempts[idx].completedAt = new Date().toISOString();
+      this.state.captureAttempts[idx].leaseExpiresAt = null;
+      this.state.captureAttempts[idx].leaseOwner = null;
       this.save();
     }
   }
@@ -901,16 +1007,17 @@ class DatabaseStore {
     if (this.pgPool) {
       try {
         const res = await this.pgPool.query(`
-          SELECT 
-            id, name, 
-            purchasing_budget::float AS "purchasingBudget", 
-            calculated_total::float AS "calculatedTotal", 
-            current_version AS "currentVersion", 
-            plan_status AS "planStatus", 
-            selected_items AS "selectedItems", 
-            deferred_items AS "deferredItems", 
-            scenario_mode AS "scenarioMode", 
-            created_at AS "createdAt", 
+          SELECT
+            id, name,
+            purchasing_budget::float AS "purchasingBudget",
+            calculated_total::float AS "calculatedTotal",
+            current_version AS "currentVersion",
+            plan_status AS "planStatus",
+            selected_items AS "selectedItems",
+            deferred_items AS "deferredItems",
+            scenario_mode AS "scenarioMode",
+            created_by_user_id AS "createdByUserId",
+            created_at AS "createdAt",
             updated_at AS "updatedAt"
           FROM purchase_plans
           ORDER BY created_at DESC;
@@ -928,16 +1035,17 @@ class DatabaseStore {
     if (this.pgPool) {
       try {
         const res = await this.pgPool.query(`
-          SELECT 
-            id, name, 
-            purchasing_budget::float AS "purchasingBudget", 
-            calculated_total::float AS "calculatedTotal", 
-            current_version AS "currentVersion", 
-            plan_status AS "planStatus", 
-            selected_items AS "selectedItems", 
-            deferred_items AS "deferredItems", 
-            scenario_mode AS "scenarioMode", 
-            created_at AS "createdAt", 
+          SELECT
+            id, name,
+            purchasing_budget::float AS "purchasingBudget",
+            calculated_total::float AS "calculatedTotal",
+            current_version AS "currentVersion",
+            plan_status AS "planStatus",
+            selected_items AS "selectedItems",
+            deferred_items AS "deferredItems",
+            scenario_mode AS "scenarioMode",
+            created_by_user_id AS "createdByUserId",
+            created_at AS "createdAt",
             updated_at AS "updatedAt"
           FROM purchase_plans
           WHERE id = $1;
@@ -957,8 +1065,8 @@ class DatabaseStore {
     if (this.pgPool) {
       try {
         await this.pgPool.query(`
-          INSERT INTO purchase_plans (id, name, purchasing_budget, calculated_total, current_version, plan_status, selected_items, deferred_items, scenario_mode, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          INSERT INTO purchase_plans (id, name, purchasing_budget, calculated_total, current_version, plan_status, selected_items, deferred_items, scenario_mode, created_by_user_id, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
           ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             purchasing_budget = EXCLUDED.purchasing_budget,
@@ -968,13 +1076,14 @@ class DatabaseStore {
             selected_items = EXCLUDED.selected_items,
             deferred_items = EXCLUDED.deferred_items,
             scenario_mode = EXCLUDED.scenario_mode,
+            created_by_user_id = EXCLUDED.created_by_user_id,
             updated_at = EXCLUDED.updated_at;
         `, [
           updated.id, updated.name, updated.purchasingBudget, updated.calculatedTotal,
           updated.currentVersion, updated.planStatus,
           JSON.stringify(updated.selectedItems || []),
           JSON.stringify(updated.deferredItems || []),
-          updated.scenarioMode, updated.updatedAt
+          updated.scenarioMode, updated.createdByUserId || null, updated.updatedAt
         ]);
         return updated;
       } catch (err) {

@@ -56,9 +56,12 @@ CREATE TABLE IF NOT EXISTS purchase_plans (
   selected_items JSONB NOT NULL DEFAULT '[]'::jsonb,
   deferred_items JSONB NOT NULL DEFAULT '[]'::jsonb,
   scenario_mode VARCHAR(50) DEFAULT 'balanced',
+  created_by_user_id VARCHAR(50) REFERENCES users(id), -- Track plan creator for resource-level authorization
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_purchase_plans_created_by ON purchase_plans(created_by_user_id);
 
 -- 5. PLAN VERSIONS TABLE
 CREATE TABLE IF NOT EXISTS plan_versions (
@@ -263,6 +266,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 
 -- Capture state table for distributed locking across service instances
 -- Ensures exactly one capture per PayPal order across multiple backend instances
+-- Includes lease/heartbeat mechanism to prevent premature takeover of long-running captures
 CREATE TABLE IF NOT EXISTS capture_attempts (
   id VARCHAR(50) PRIMARY KEY,
   paypal_order_id VARCHAR(100) NOT NULL UNIQUE,
@@ -272,11 +276,17 @@ CREATE TABLE IF NOT EXISTS capture_attempts (
   error_message TEXT,
   started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   completed_at TIMESTAMP WITH TIME ZONE,
-  retry_count INTEGER NOT NULL DEFAULT 0
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  -- Lease/heartbeat fields for safe distributed capture coordination
+  lease_expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '5 minutes'),
+  last_heartbeat_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  lease_owner VARCHAR(100), -- Instance identifier holding the lease
+  paypal_request_id VARCHAR(100) -- Stable idempotency key for PayPal API
 );
 
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_payment_id ON capture_attempts(payment_id);
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_status_started ON capture_attempts(status, started_at);
+CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
 
 -- Seed System Personas with Bcrypt Password Hashes
 INSERT INTO users (id, name, email, password_hash, role, display_role, department, avatar_initials, badge, permissions)

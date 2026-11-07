@@ -46,6 +46,7 @@ export interface PurchasePlanRecord {
   selectedItems: any[];
   deferredItems: any[];
   scenarioMode: 'balanced' | 'aggressive' | 'conservative';
+  createdByUserId?: string; // Track plan creator for resource-level authorization
   createdAt: string;
   updatedAt: string;
 }

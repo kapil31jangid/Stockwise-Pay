@@ -3,7 +3,7 @@
 **Date:** November 7, 2026  
 **Auditor:** Principal Software Architect, Security & QA Engineering Team  
 **Repository:** https://github.com/kapil31jangid/Stockwise-Pay  
-**Latest Commit:** `0deb3149bba49ab9d23cda9cf18676934cf94dd4`  
+**Latest Commit:** `3fb4aca` (merge of `0deb314` with post-merge remediation)  
 **Final Decision:** `READY FOR SANDBOX DEMONSTRATION ONLY`
 
 ---
@@ -103,8 +103,8 @@ All test runs were executed against the live workspace with real PostgreSQL and 
 |---|---|---|---|---|---|---|
 | **Inventory Intelligence (Demand Forecasting)** | `npm --prefix intelligence test` | 7 | 7 | 0 | 0 | 240 ms |
 | **Supplier Intelligence (Optimization & Scoring)** | `npm --prefix supplier-intelligence test` | 13 | 13 | 0 | 0 | 299 ms |
-| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 44 | 44 | 0 | 0 | 120.3 s |
-| **Combined Full-Stack Test Runner** | `npm test` | **64** | **64** | **0** | **0** | **121 s** |
+| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 49 | 49 | 0 | 0 | 209 s |
+| **Combined Full-Stack Test Runner** | `npm test` | **69** | **69** | **0** | **0** | **210 s** |
 
 ### 4.2 Production Build Verification
 | Component | Command | Result | Output Details |
@@ -192,11 +192,14 @@ The following findings were identified and remediated in the final patch release
 
 ### 6.3 Distributed Capture Protection (Finding 3)
 - **Issue:** In-memory `Set` for capture locking only protected single instance; no cross-instance protection.
-- **Fix:** Replaced in-memory lock with PostgreSQL advisory locks in `backend/src/services/paypal.ts`:
-  - `acquireCaptureLock(orderId)` uses `pg_try_advisory_xact_lock()` for cross-instance mutual exclusion
+- **Fix:** Implemented persistent `capture_attempts` table with lease/heartbeat mechanism in `backend/src/db/index.ts` and `backend/src/services/paypal.ts`:
+  - Atomic `INSERT` with unique constraint on `paypal_order_id` ensures exactly one capture attempt per order across instances
+  - 5-minute lease (`lease_expires_at`) with 2-minute heartbeat renewal (`last_heartbeat_at`, `lease_owner`)
+  - Stale lease detection (>5 min expiry) with safe reconciliation before takeover
   - `PayPal-Request-Id` header (`CAP-${orderId}`) provides API-level idempotency on capture requests
   - Database row-level locking (`FOR UPDATE` on `payments` and `budget_config`) in `executePaymentCaptureTransaction`
   - Ensures exactly one financial settlement per order across separate service instances
+  - Schema: `backend/src/db/schema.sql` and `supabase.sql` include `capture_attempts` table with lease/heartbeat fields and indexes
 
 ### 6.4 CI Reproducibility (Finding 4)
 - **Issue:** `npm ci || npm install` fallback masked missing lockfiles; schema validation was string-only.
@@ -209,7 +212,7 @@ The following findings were identified and remediated in the final patch release
 
 ### 6.5 Documentation (Finding 5)
 - **Fix:** Removed `FINAL_PRE_DEPLOYMENT_AUDIT_REPORT.md` and `PRE_DEPLOYMENT_AUDIT_REPORT.md` from `.gitignore`
-- **Fix:** This report includes latest commit hash (`0deb3149bba49ab9d23cda9cf18676934cf94dd4`)
+- **Fix:** This report includes latest commit hash (`3fb4aca` merge of `0deb314`)
 - **Fix:** Test counts updated post-execution (see Section 7)
 
 ---
@@ -223,8 +226,8 @@ The following findings were identified and remediated in the final patch release
 |---|---|---|---|---|---|---|---|
 | **Inventory Intelligence (Demand Forecasting)** | `npm --prefix intelligence test` | 7 | 7 | 0 | 0 | 240 ms |
 | **Supplier Intelligence (Optimization & Scoring)** | `npm --prefix supplier-intelligence test` | 13 | 13 | 0 | 0 | 299 ms |
-| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 44 | 44 | 0 | 0 | 120.3 s |
-| **Combined Full-Stack Test Runner** | `npm test` | **64** | **64** | **0** | **0** | **121 s** |
+| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 49 | 49 | 0 | 0 | 209 s |
+| **Combined Full-Stack Test Runner** | `npm test` | **69** | **69** | **0** | **0** | **210 s** |
 
 ### 7.2 Production Build Verification
 | Component | Command | Result | Output Details |
@@ -262,7 +265,7 @@ Actual PayPal Sandbox order IDs generated, verified, and captured during the fin
 - [x] Fail-closed authentication active when database connection fails.
 - [x] PostgreSQL database schema migrated with 15 active tables in Supabase.
 - [x] Manager approval required prior to PayPal order creation; modifications invalidate approval.
-- [x] In-flight mutual-exclusion capture lock active on PayPal captures (distributed via advisory locks).
+- [x] In-flight mutual-exclusion capture lock active on PayPal captures (distributed via `capture_attempts` table with lease/heartbeat).
 - [x] PayPal webhook signature verification and duplicate event rejection active using `event.id`.
 - [x] Role-Based Access Control verified (Buyer vs Approver vs Treasury).
 - [x] CI pipeline configured with reproducible `npm ci`, migration validation, builds, tests, and critical audit checks.
@@ -273,4 +276,4 @@ Actual PayPal Sandbox order IDs generated, verified, and captured during the fin
 
 **Report Approved by:** Lead Application Security Architect & Full-Stack Engineering Team  
 **StockWise Pay Version:** 1.0.0-rc3  
-**Latest Commit:** `0deb3149bba49ab9d23cda9cf18676934cf94dd4`
+**Latest Commit:** `3fb4aca` (merge of `0deb314` with post-merge remediation)
