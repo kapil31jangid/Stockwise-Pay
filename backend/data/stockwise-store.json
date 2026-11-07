@@ -1,0 +1,1693 @@
+{
+  "products": [
+    {
+      "sku": "HP101",
+      "name": "Wireless Noise-Canceling Headphones",
+      "category": "Audio",
+      "currentStock": 14,
+      "safetyStock": 25,
+      "unitCost": 14.5,
+      "sellingPrice": 39.99,
+      "salesHistory": [
+        2,
+        3,
+        2,
+        4,
+        3,
+        2,
+        5,
+        3,
+        4,
+        2,
+        3,
+        4,
+        3,
+        4
+      ],
+      "preferredVendorId": "SUP001",
+      "updatedAt": "2026-11-07T10:52:28.889Z"
+    },
+    {
+      "sku": "KB201",
+      "name": "RGB Mechanical Gaming Keyboard",
+      "category": "Peripherals",
+      "currentStock": 15,
+      "safetyStock": 30,
+      "unitCost": 22,
+      "sellingPrice": 59.99,
+      "salesHistory": [
+        3,
+        4,
+        3,
+        5,
+        4,
+        3,
+        6,
+        4,
+        5,
+        4,
+        3,
+        5,
+        4,
+        6
+      ],
+      "preferredVendorId": "SUP002",
+      "updatedAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "sku": "CB301",
+      "name": "Braided 100W USB-C to USB-C Cable (2m)",
+      "category": "Accessories",
+      "currentStock": 150,
+      "safetyStock": 40,
+      "unitCost": 2.1,
+      "sellingPrice": 8.99,
+      "salesHistory": [
+        5,
+        6,
+        7,
+        5,
+        6,
+        7,
+        8,
+        6,
+        7,
+        5,
+        6,
+        7,
+        6,
+        7
+      ],
+      "preferredVendorId": "SUP001",
+      "updatedAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "sku": "MO401",
+      "name": "Ergonomic Wireless Optical Mouse",
+      "category": "Peripherals",
+      "currentStock": 8,
+      "safetyStock": 20,
+      "unitCost": 8.4,
+      "sellingPrice": 24.99,
+      "salesHistory": [
+        2,
+        3,
+        2,
+        3,
+        4,
+        3,
+        3,
+        2,
+        3,
+        4,
+        3,
+        2,
+        4,
+        3
+      ],
+      "preferredVendorId": "SUP003",
+      "updatedAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "sku": "PB501",
+      "name": "20,000mAh Fast-Charging Power Bank",
+      "category": "Accessories",
+      "currentStock": 5,
+      "safetyStock": 18,
+      "unitCost": 12.8,
+      "sellingPrice": 34.99,
+      "salesHistory": [
+        3,
+        2,
+        3,
+        4,
+        3,
+        3,
+        4,
+        3,
+        4,
+        3,
+        2,
+        4,
+        3,
+        4
+      ],
+      "preferredVendorId": "SUP002",
+      "updatedAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "sku": "SSD601",
+      "name": "1TB NVMe M.2 High-Speed SSD",
+      "category": "Components",
+      "currentStock": 6,
+      "safetyStock": 15,
+      "unitCost": 48,
+      "sellingPrice": 89.99,
+      "salesHistory": [
+        1,
+        2,
+        1,
+        2,
+        2,
+        1,
+        3,
+        2,
+        2,
+        1,
+        2,
+        3,
+        2,
+        2
+      ],
+      "preferredVendorId": "SUP004",
+      "updatedAt": "2026-11-07T10:52:28.890Z"
+    }
+  ],
+  "suppliers": [
+    {
+      "id": "SUP001",
+      "name": "VoltCore Distribution",
+      "contactEmail": "orders@voltcore.dist",
+      "contactPhone": "+1-555-019-2831",
+      "location": "Chicago, IL (US Domestic)",
+      "estimatedLeadTimeDays": 2,
+      "reliabilityScore": 98.6,
+      "paymentTerms": "Net 30 / PayPal",
+      "specialties": [
+        "Audio",
+        "Fast Domestic Delivery",
+        "Accessories"
+      ],
+      "createdAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "id": "SUP002",
+      "name": "Apex Electronics Wholesale",
+      "contactEmail": "sales@apexwholesale.com",
+      "contactPhone": "+1-555-014-9922",
+      "location": "Dallas, TX (US Domestic)",
+      "estimatedLeadTimeDays": 3,
+      "reliabilityScore": 99.2,
+      "paymentTerms": "Immediate PayPal / Net 15",
+      "specialties": [
+        "Peripherals",
+        "High Reliability",
+        "Tier-1 Certified"
+      ],
+      "createdAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "id": "SUP003",
+      "name": "Shenzhen Precision Micro Ltd",
+      "contactEmail": "export@shenzhenmicro.cn",
+      "contactPhone": "+86-755-8392-1002",
+      "location": "Shenzhen, Guangdong (Direct Factory)",
+      "estimatedLeadTimeDays": 8,
+      "reliabilityScore": 96.8,
+      "paymentTerms": "PayPal Goods & Services",
+      "specialties": [
+        "Lowest Factory Cost",
+        "Bulk Micro-components"
+      ],
+      "createdAt": "2026-11-07T10:52:28.890Z"
+    },
+    {
+      "id": "SUP004",
+      "name": "SiliconWave Global Components",
+      "contactEmail": "procure@siliconwave.io",
+      "contactPhone": "+1-555-017-4820",
+      "location": "San Jose, CA",
+      "estimatedLeadTimeDays": 4,
+      "reliabilityScore": 97.5,
+      "paymentTerms": "Net 30 / PayPal Sandbox",
+      "specialties": [
+        "Storage",
+        "Memory",
+        "Components"
+      ],
+      "createdAt": "2026-11-07T10:52:28.890Z"
+    }
+  ],
+  "supplierOffers": [
+    {
+      "id": "OFF001",
+      "sku": "HP101",
+      "supplierId": "SUP001",
+      "unitPrice": 15.2,
+      "shippingCost": 15,
+      "moq": 10,
+      "leadTimeDays": 2,
+      "bulkDiscountNote": "5% off > 50 units",
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF002",
+      "sku": "HP101",
+      "supplierId": "SUP002",
+      "unitPrice": 16,
+      "shippingCost": 10,
+      "moq": 15,
+      "leadTimeDays": 3,
+      "bulkDiscountNote": "Free shipping on orders > $300",
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF003",
+      "sku": "HP101",
+      "supplierId": "SUP003",
+      "unitPrice": 12.8,
+      "shippingCost": 35,
+      "moq": 25,
+      "leadTimeDays": 8,
+      "bulkDiscountNote": "10% factory rebate > 100 units",
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF004",
+      "sku": "KB201",
+      "supplierId": "SUP001",
+      "unitPrice": 24,
+      "shippingCost": 20,
+      "moq": 5,
+      "leadTimeDays": 2,
+      "bulkDiscountNote": "3% discount > 20 units",
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF005",
+      "sku": "KB201",
+      "supplierId": "SUP002",
+      "unitPrice": 22,
+      "shippingCost": 15,
+      "moq": 10,
+      "leadTimeDays": 3,
+      "bulkDiscountNote": "Preferred partner volume pricing",
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF006",
+      "sku": "KB201",
+      "supplierId": "SUP003",
+      "unitPrice": 18.5,
+      "shippingCost": 40,
+      "moq": 20,
+      "leadTimeDays": 9,
+      "bulkDiscountNote": "Wholesale factory direct",
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF007",
+      "sku": "CB301",
+      "supplierId": "SUP001",
+      "unitPrice": 2.1,
+      "shippingCost": 5,
+      "moq": 50,
+      "leadTimeDays": 2,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF008",
+      "sku": "CB301",
+      "supplierId": "SUP002",
+      "unitPrice": 2.3,
+      "shippingCost": 0,
+      "moq": 30,
+      "leadTimeDays": 3,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF009",
+      "sku": "CB301",
+      "supplierId": "SUP003",
+      "unitPrice": 1.4,
+      "shippingCost": 25,
+      "moq": 100,
+      "leadTimeDays": 8,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF010",
+      "sku": "MO401",
+      "supplierId": "SUP001",
+      "unitPrice": 9.1,
+      "shippingCost": 12,
+      "moq": 10,
+      "leadTimeDays": 2,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF011",
+      "sku": "MO401",
+      "supplierId": "SUP002",
+      "unitPrice": 8.4,
+      "shippingCost": 10,
+      "moq": 15,
+      "leadTimeDays": 3,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF012",
+      "sku": "PB501",
+      "supplierId": "SUP002",
+      "unitPrice": 12.8,
+      "shippingCost": 15,
+      "moq": 10,
+      "leadTimeDays": 3,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF013",
+      "sku": "PB501",
+      "supplierId": "SUP003",
+      "unitPrice": 10.2,
+      "shippingCost": 30,
+      "moq": 25,
+      "leadTimeDays": 8,
+      "quoteCurrency": "USD"
+    },
+    {
+      "id": "OFF014",
+      "sku": "SSD601",
+      "supplierId": "SUP004",
+      "unitPrice": 48,
+      "shippingCost": 15,
+      "moq": 5,
+      "leadTimeDays": 4,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "purchasePlans": [
+    {
+      "id": "PLAN-2026-001",
+      "name": "Q4 Urgent High-Stockout Restock",
+      "purchasingBudget": 2000,
+      "calculatedTotal": 1850,
+      "currentVersion": 1,
+      "planStatus": "pending_approval",
+      "selectedItems": [
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 30,
+          "supplierId": "SUP001",
+          "supplierName": "VoltCore Distribution",
+          "unitCost": 15.2,
+          "subtotal": 456,
+          "leadTimeDays": 2,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 5.09
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 40,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "unitCost": 22,
+          "subtotal": 880,
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.75
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 10,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "unitCost": 48,
+          "subtotal": 480,
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 4.2
+        }
+      ],
+      "deferredItems": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "reason": "LOW_STOCKOUT_RISK_DEFERRED"
+        }
+      ],
+      "scenarioMode": "balanced",
+      "createdAt": "2026-11-07T09:52:28.907Z",
+      "updatedAt": "2026-11-07T10:52:28.907Z"
+    },
+    {
+      "id": "PLAN-1794048754481",
+      "name": "AI Restock Plan - $1500.00 (BALANCED)",
+      "purchasingBudget": 1500,
+      "calculatedTotal": 1293,
+      "currentVersion": 1,
+      "planStatus": "pending_approval",
+      "selectedItems": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 17,
+          "unitCost": 48,
+          "subtotal": 816,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        }
+      ],
+      "deferredItems": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "scenarioMode": "balanced",
+      "createdAt": "2026-11-07T10:52:34.481Z",
+      "updatedAt": "2026-11-07T10:52:34.481Z"
+    },
+    {
+      "id": "PLAN-1794048756704",
+      "name": "AI Restock Plan - $1200.00 (CHEAPEST)",
+      "purchasingBudget": 1200,
+      "calculatedTotal": 1197,
+      "currentVersion": 1,
+      "planStatus": "pending_approval",
+      "selectedItems": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 15,
+          "unitCost": 48,
+          "subtotal": 720,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        }
+      ],
+      "deferredItems": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "scenarioMode": "conservative",
+      "createdAt": "2026-11-07T10:52:36.704Z",
+      "updatedAt": "2026-11-07T10:52:36.704Z"
+    },
+    {
+      "id": "PLAN-1794048759333",
+      "name": "AI Restock Plan - $1000.00 (BALANCED)",
+      "purchasingBudget": 1000,
+      "calculatedTotal": 957,
+      "currentVersion": 1,
+      "planStatus": "paid",
+      "selectedItems": [
+        {
+          "sku": "PB501",
+          "subtotal": 275.4,
+          "unitCost": 10.2,
+          "riskLevel": "HIGH",
+          "supplierId": "SUP003",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "leadTimeDays": 8,
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "daysUntilStockout": 1.52,
+          "recommendedQuantity": 27
+        },
+        {
+          "sku": "MO401",
+          "subtotal": 201.6,
+          "unitCost": 8.4,
+          "riskLevel": "HIGH",
+          "supplierId": "SUP002",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "leadTimeDays": 3,
+          "supplierName": "Apex Electronics Wholesale",
+          "daysUntilStockout": 2.67,
+          "recommendedQuantity": 24
+        },
+        {
+          "sku": "SSD601",
+          "subtotal": 480,
+          "unitCost": 48,
+          "riskLevel": "HIGH",
+          "supplierId": "SUP004",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "leadTimeDays": 4,
+          "supplierName": "SiliconWave Global Components",
+          "daysUntilStockout": 3,
+          "recommendedQuantity": 10
+        }
+      ],
+      "deferredItems": [
+        {
+          "sku": "CB301",
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "estimatedCost": 0,
+          "daysUntilStockout": 23.85,
+          "recommendedQuantity": 0
+        },
+        {
+          "sku": "KB201",
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "estimatedCost": 610.5,
+          "daysUntilStockout": 3.39,
+          "recommendedQuantity": 33
+        },
+        {
+          "sku": "HP101",
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "estimatedCost": 320,
+          "daysUntilStockout": 4.26,
+          "recommendedQuantity": 25
+        }
+      ],
+      "scenarioMode": "balanced",
+      "createdAt": "2026-11-07T10:52:39.024Z",
+      "updatedAt": "2026-11-07T10:52:48.539Z"
+    },
+    {
+      "id": "PLAN-1794048773263",
+      "name": "AI Restock Plan - $900.00 (BALANCED)",
+      "purchasingBudget": 600,
+      "calculatedTotal": 477,
+      "currentVersion": 2,
+      "planStatus": "pending_approval",
+      "selectedItems": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        }
+      ],
+      "deferredItems": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 17,
+          "estimatedCost": 816,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "scenarioMode": "balanced",
+      "createdAt": "2026-11-07T10:52:52.952Z",
+      "updatedAt": "2026-11-07T10:52:56.769Z"
+    }
+  ],
+  "planVersions": [
+    {
+      "id": "VER-PLAN-2026-001-v1",
+      "planId": "PLAN-2026-001",
+      "versionNumber": 1,
+      "budget": 2000,
+      "calculatedTotal": 1816,
+      "itemsSnapshot": [],
+      "deferredSnapshot": [],
+      "changeReason": "Initial baseline plan",
+      "createdAt": "2026-11-07T10:52:28.907Z"
+    },
+    {
+      "id": "VER-PLAN-1794048754481-v1",
+      "planId": "PLAN-1794048754481",
+      "versionNumber": 1,
+      "budget": 1500,
+      "calculatedTotal": 1293,
+      "itemsSnapshot": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 17,
+          "unitCost": 48,
+          "subtotal": 816,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        }
+      ],
+      "deferredSnapshot": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "changeReason": "Initial AI-generated plan",
+      "createdAt": "2026-11-07T10:52:34.774Z"
+    },
+    {
+      "id": "VER-PLAN-1794048756704-v1",
+      "planId": "PLAN-1794048756704",
+      "versionNumber": 1,
+      "budget": 1200,
+      "calculatedTotal": 1197,
+      "itemsSnapshot": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 15,
+          "unitCost": 48,
+          "subtotal": 720,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        }
+      ],
+      "deferredSnapshot": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "changeReason": "Initial AI-generated plan",
+      "createdAt": "2026-11-07T10:52:37.000Z"
+    },
+    {
+      "id": "VER-PLAN-1794048759333-v1",
+      "planId": "PLAN-1794048759333",
+      "versionNumber": 1,
+      "budget": 1000,
+      "calculatedTotal": 957,
+      "itemsSnapshot": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 10,
+          "unitCost": 48,
+          "subtotal": 480,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        }
+      ],
+      "deferredSnapshot": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "changeReason": "Initial AI-generated plan",
+      "createdAt": "2026-11-07T10:52:39.622Z"
+    },
+    {
+      "id": "VER-PLAN-1794048773263-v1",
+      "planId": "PLAN-1794048773263",
+      "versionNumber": 1,
+      "budget": 900,
+      "calculatedTotal": 861,
+      "itemsSnapshot": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 8,
+          "unitCost": 48,
+          "subtotal": 384,
+          "supplierId": "SUP004",
+          "supplierName": "SiliconWave Global Components",
+          "leadTimeDays": 4,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        }
+      ],
+      "deferredSnapshot": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "changeReason": "Initial AI-generated plan",
+      "createdAt": "2026-11-07T10:52:53.559Z"
+    },
+    {
+      "id": "VER-PLAN-1794048773263-v2",
+      "planId": "PLAN-1794048773263",
+      "versionNumber": 2,
+      "budget": 600,
+      "calculatedTotal": 477,
+      "itemsSnapshot": [
+        {
+          "sku": "PB501",
+          "productName": "20,000mAh Fast-Charging Power Bank",
+          "recommendedQuantity": 27,
+          "unitCost": 10.2,
+          "subtotal": 275.4,
+          "supplierId": "SUP003",
+          "supplierName": "Shenzhen Precision Micro Ltd",
+          "leadTimeDays": 8,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 1.52
+        },
+        {
+          "sku": "MO401",
+          "productName": "Ergonomic Wireless Optical Mouse",
+          "recommendedQuantity": 24,
+          "unitCost": 8.4,
+          "subtotal": 201.6,
+          "supplierId": "SUP002",
+          "supplierName": "Apex Electronics Wholesale",
+          "leadTimeDays": 3,
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 2.67
+        }
+      ],
+      "deferredSnapshot": [
+        {
+          "sku": "CB301",
+          "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+          "recommendedQuantity": 0,
+          "estimatedCost": 0,
+          "reason": "ZERO_QUANTITY_NEEDED",
+          "riskLevel": "LOW",
+          "daysUntilStockout": 23.85
+        },
+        {
+          "sku": "SSD601",
+          "productName": "1TB NVMe M.2 High-Speed SSD",
+          "recommendedQuantity": 17,
+          "estimatedCost": 816,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3
+        },
+        {
+          "sku": "KB201",
+          "productName": "RGB Mechanical Gaming Keyboard",
+          "recommendedQuantity": 33,
+          "estimatedCost": 610.5,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "HIGH",
+          "daysUntilStockout": 3.39
+        },
+        {
+          "sku": "HP101",
+          "productName": "Wireless Noise-Canceling Headphones",
+          "recommendedQuantity": 25,
+          "estimatedCost": 320,
+          "reason": "MOQ_EXCEEDS_BUDGET",
+          "riskLevel": "MEDIUM",
+          "daysUntilStockout": 4.26
+        }
+      ],
+      "changeReason": "Recalculated with budget $600.00",
+      "createdAt": "2026-11-07T10:52:57.068Z"
+    }
+  ],
+  "approvals": [
+    {
+      "id": "APP-1794048760529",
+      "purchasePlanId": "PLAN-1794048759333",
+      "approvedVersion": 1,
+      "approverName": "Marcus Vance",
+      "approverRole": "Inventory Lead",
+      "status": "approved",
+      "decisionNotes": "Approved for Q4 Restock",
+      "timestamp": "2026-11-07T10:52:40.529Z"
+    },
+    {
+      "id": "APP-1794048774479",
+      "purchasePlanId": "PLAN-1794048773263",
+      "approvedVersion": 1,
+      "approverName": "Marcus Vance",
+      "approverRole": "Inventory Lead",
+      "status": "approved",
+      "decisionNotes": "Approved restock plan v1 for $861.00",
+      "timestamp": "2026-11-07T10:52:54.479Z"
+    }
+  ],
+  "payments": [
+    {
+      "id": "PAY-1001",
+      "purchasePlanId": "PLAN-2026-000",
+      "planVersion": 1,
+      "paypalOrderId": "8AA1234567890123",
+      "paypalCaptureId": "9BB9876543210987",
+      "amount": 1450,
+      "currency": "USD",
+      "paymentMethod": "PayPal Sandbox",
+      "verifiedStatus": "COMPLETED",
+      "payerEmail": "buyer-retail@stockwise.test",
+      "createdAt": "2026-11-05T10:52:28.907Z",
+      "updatedAt": "2026-11-05T10:52:28.907Z"
+    },
+    {
+      "id": "PAY-1794048764544",
+      "purchasePlanId": "PLAN-1794048759333",
+      "planVersion": 1,
+      "paypalOrderId": "6AJ80136J56683305",
+      "paypalCaptureId": "CAP-SANDBOX-1794048767819",
+      "amount": 954.15,
+      "currency": "USD",
+      "paymentMethod": "PayPal Sandbox",
+      "verifiedStatus": "COMPLETED",
+      "payerEmail": "buyer-retail@stockwise.test",
+      "rawPaypalResponse": {
+        "note": "Completed via sandbox test/demo flow",
+        "raw": "{\"name\":\"UNPROCESSABLE_ENTITY\",\"details\":[{\"issue\":\"ORDER_NOT_APPROVED\",\"description\":\"Payer has not yet approved the Order for payment. Please redirect the payer to the 'rel':'approve' url returned as part of the HATEOAS links within the Create Order call or provide a valid payment_source in the request.\"}],\"message\":\"The requested action could not be performed, semantically incorrect, or failed business validation.\",\"debug_id\":\"f6754989de1fb\",\"links\":[{\"href\":\"https://developer.paypal.com/api/rest/reference/orders/v2/errors/#ORDER_NOT_APPROVED\",\"rel\":\"information_link\",\"method\":\"GET\"}]}"
+      },
+      "createdAt": "2026-11-07T10:52:44.544Z",
+      "updatedAt": "2026-11-07T10:52:47.819Z"
+    }
+  ],
+  "paymentEvents": [],
+  "auditLogs": [
+    {
+      "actor": "Marcus Vance",
+      "action": "USER_LOGIN",
+      "entityType": "AUTH",
+      "entityId": "USR-001",
+      "details": {
+        "email": "marcus.vance@stockwisepay.com",
+        "role": "Inventory Lead / Approver"
+      },
+      "id": "LOG-1794048933673-795",
+      "createdAt": "2026-11-07T10:55:33.673Z"
+    },
+    {
+      "actor": "Procurement Manager",
+      "action": "RECALCULATE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048773263",
+      "previousStatus": "approved",
+      "newStatus": "pending_approval",
+      "details": {
+        "version": 2,
+        "budget": 600,
+        "calculatedTotal": 477
+      },
+      "id": "LOG-1794048777350-171",
+      "createdAt": "2026-11-07T10:52:57.350Z"
+    },
+    {
+      "actor": "Marcus Vance",
+      "action": "APPROVE_PURCHASE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048773263",
+      "previousStatus": "pending_approval",
+      "newStatus": "approved",
+      "details": {
+        "approvedVersion": 1,
+        "calculatedTotal": 861
+      },
+      "id": "LOG-1794048775073-605",
+      "createdAt": "2026-11-07T10:52:55.073Z"
+    },
+    {
+      "actor": "AI Procurement Agent",
+      "action": "GENERATE_PURCHASE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048773263",
+      "newStatus": "pending_approval",
+      "details": {
+        "budget": 900,
+        "total": 861,
+        "itemsCount": 3
+      },
+      "id": "LOG-1794048773900-385",
+      "createdAt": "2026-11-07T10:52:53.900Z"
+    },
+    {
+      "actor": "Procurement Manager",
+      "action": "CAPTURE_PAYPAL_ORDER",
+      "entityType": "PAYMENT",
+      "entityId": "CAP-SANDBOX-1794048767819",
+      "previousStatus": "CREATED",
+      "newStatus": "COMPLETED",
+      "details": {
+        "orderId": "6AJ80136J56683305",
+        "captureId": "CAP-SANDBOX-1794048767819",
+        "amount": 954.15,
+        "note": "Demo/test capture completed"
+      },
+      "id": "LOG-1794048769405-905",
+      "createdAt": "2026-11-07T10:52:49.405Z"
+    },
+    {
+      "actor": "Procurement Manager",
+      "action": "CREATE_PAYPAL_ORDER",
+      "entityType": "PAYMENT",
+      "entityId": "6AJ80136J56683305",
+      "newStatus": "CREATED",
+      "details": {
+        "planId": "PLAN-1794048759333",
+        "amount": 954.15,
+        "paypalOrderId": "6AJ80136J56683305"
+      },
+      "id": "LOG-1794048764834-69",
+      "createdAt": "2026-11-07T10:52:44.834Z"
+    },
+    {
+      "actor": "Marcus Vance",
+      "action": "APPROVE_PURCHASE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048759333",
+      "previousStatus": "pending_approval",
+      "newStatus": "approved",
+      "details": {
+        "approvedVersion": 1,
+        "calculatedTotal": 957
+      },
+      "id": "LOG-1794048761090-135",
+      "createdAt": "2026-11-07T10:52:41.091Z"
+    },
+    {
+      "actor": "AI Procurement Agent",
+      "action": "GENERATE_PURCHASE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048759333",
+      "newStatus": "pending_approval",
+      "details": {
+        "budget": 1000,
+        "total": 957,
+        "itemsCount": 3
+      },
+      "id": "LOG-1794048759907-996",
+      "createdAt": "2026-11-07T10:52:39.907Z"
+    },
+    {
+      "actor": "AI Procurement Agent",
+      "action": "GENERATE_PURCHASE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048756704",
+      "newStatus": "pending_approval",
+      "details": {
+        "budget": 1200,
+        "total": 1197,
+        "itemsCount": 3
+      },
+      "id": "LOG-1794048757282-288",
+      "createdAt": "2026-11-07T10:52:37.282Z"
+    },
+    {
+      "actor": "AI Procurement Agent",
+      "action": "GENERATE_PURCHASE_PLAN",
+      "entityType": "PURCHASE_PLAN",
+      "entityId": "PLAN-1794048754481",
+      "newStatus": "pending_approval",
+      "details": {
+        "budget": 1500,
+        "total": 1293,
+        "itemsCount": 3
+      },
+      "id": "LOG-1794048755065-807",
+      "createdAt": "2026-11-07T10:52:35.065Z"
+    },
+    {
+      "id": "LOG-001",
+      "actor": "System Seed",
+      "action": "INIT_STORE",
+      "entityType": "SYSTEM",
+      "entityId": "ROOT",
+      "createdAt": "2026-11-07T10:52:28.907Z"
+    }
+  ],
+  "budget": {
+    "id": "default",
+    "monthlyBudget": 5000,
+    "spentAmount": 2154.15,
+    "allocatedAmount": 895.85,
+    "updatedAt": "2026-11-07T10:52:49.109Z"
+  },
+  "agentRuns": [
+    {
+      "id": "RUN-1794048779318",
+      "requestType": "PROCUREMENT_ANALYSIS",
+      "userPrompt": "Simulate high volume restock",
+      "toolsCalled": [
+        "analyze_inventory",
+        "optimize_budget",
+        "explain_purchase_plan"
+      ],
+      "results": {
+        "runId": "RUN-1794048779318",
+        "userPrompt": "Simulate high volume restock",
+        "inventorySummary": {
+          "totalProducts": 6,
+          "criticalCount": 4,
+          "mediumRiskCount": 1
+        },
+        "inventoryReport": [
+          {
+            "sku": "CB301",
+            "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+            "currentStock": 150,
+            "forecasting": {
+              "averageDailyDemand": 6.29,
+              "smaForecast7Days": 44,
+              "emaForecast7Days": 46,
+              "forecast30Days": 189,
+              "demandTrend": "STABLE"
+            },
+            "inventoryAnalysis": {
+              "daysUntilStockout": 23.85,
+              "reorderPoint": 66,
+              "recommendedQuantity": 0,
+              "riskLevel": "LOW"
+            }
+          },
+          {
+            "sku": "HP101",
+            "productName": "Wireless Noise-Canceling Headphones",
+            "currentStock": 14,
+            "forecasting": {
+              "averageDailyDemand": 3.29,
+              "smaForecast7Days": 23,
+              "emaForecast7Days": 25,
+              "forecast30Days": 99,
+              "demandTrend": "STABLE"
+            },
+            "inventoryAnalysis": {
+              "daysUntilStockout": 4.26,
+              "reorderPoint": 39,
+              "recommendedQuantity": 25,
+              "riskLevel": "MEDIUM"
+            }
+          },
+          {
+            "sku": "KB201",
+            "productName": "RGB Mechanical Gaming Keyboard",
+            "currentStock": 15,
+            "forecasting": {
+              "averageDailyDemand": 4.43,
+              "smaForecast7Days": 31,
+              "emaForecast7Days": 35,
+              "forecast30Days": 133,
+              "demandTrend": "INCREASING"
+            },
+            "inventoryAnalysis": {
+              "daysUntilStockout": 3.39,
+              "reorderPoint": 48,
+              "recommendedQuantity": 33,
+              "riskLevel": "HIGH"
+            }
+          },
+          {
+            "sku": "MO401",
+            "productName": "Ergonomic Wireless Optical Mouse",
+            "currentStock": 8,
+            "forecasting": {
+              "averageDailyDemand": 3,
+              "smaForecast7Days": 21,
+              "emaForecast7Days": 22,
+              "forecast30Days": 90,
+              "demandTrend": "STABLE"
+            },
+            "inventoryAnalysis": {
+              "daysUntilStockout": 2.67,
+              "reorderPoint": 32,
+              "recommendedQuantity": 24,
+              "riskLevel": "HIGH"
+            }
+          },
+          {
+            "sku": "PB501",
+            "productName": "20,000mAh Fast-Charging Power Bank",
+            "currentStock": 5,
+            "forecasting": {
+              "averageDailyDemand": 3.29,
+              "smaForecast7Days": 23,
+              "emaForecast7Days": 25,
+              "forecast30Days": 99,
+              "demandTrend": "STABLE"
+            },
+            "inventoryAnalysis": {
+              "daysUntilStockout": 1.52,
+              "reorderPoint": 32,
+              "recommendedQuantity": 27,
+              "riskLevel": "HIGH"
+            }
+          },
+          {
+            "sku": "SSD601",
+            "productName": "1TB NVMe M.2 High-Speed SSD",
+            "currentStock": 6,
+            "forecasting": {
+              "averageDailyDemand": 2,
+              "smaForecast7Days": 14,
+              "emaForecast7Days": 15,
+              "forecast30Days": 60,
+              "demandTrend": "INCREASING"
+            },
+            "inventoryAnalysis": {
+              "daysUntilStockout": 3,
+              "reorderPoint": 23,
+              "recommendedQuantity": 17,
+              "riskLevel": "HIGH"
+            }
+          }
+        ],
+        "optimizedPlan": {
+          "availableBudget": 1800,
+          "allocatedBudget": 1792.5,
+          "remainingBudget": 7.5,
+          "budgetUtilizationPercentage": 99.58,
+          "totalItemsConsidered": 6,
+          "itemsPurchasedCount": 4,
+          "totalUnitsOrdered": 95,
+          "itemsPurchased": [
+            {
+              "sku": "PB501",
+              "productName": "20,000mAh Fast-Charging Power Bank",
+              "requestedQuantity": 27,
+              "allocatedQuantity": 27,
+              "isPartial": false,
+              "unitPrice": 10.2,
+              "lineTotal": 275.4,
+              "selectedSupplier": {
+                "id": "SUP003",
+                "name": "Shenzhen Precision Micro Ltd",
+                "reliability": 96.8,
+                "leadTimeDays": 8
+              },
+              "urgencyContext": {
+                "riskLevel": "HIGH",
+                "daysUntilStockout": 1.52,
+                "demandTrend": "STABLE"
+              }
+            },
+            {
+              "sku": "MO401",
+              "productName": "Ergonomic Wireless Optical Mouse",
+              "requestedQuantity": 24,
+              "allocatedQuantity": 24,
+              "isPartial": false,
+              "unitPrice": 8.4,
+              "lineTotal": 201.6,
+              "selectedSupplier": {
+                "id": "SUP002",
+                "name": "Apex Electronics Wholesale",
+                "reliability": 99.2,
+                "leadTimeDays": 3
+              },
+              "urgencyContext": {
+                "riskLevel": "HIGH",
+                "daysUntilStockout": 2.67,
+                "demandTrend": "STABLE"
+              }
+            },
+            {
+              "sku": "SSD601",
+              "productName": "1TB NVMe M.2 High-Speed SSD",
+              "requestedQuantity": 17,
+              "allocatedQuantity": 17,
+              "isPartial": false,
+              "unitPrice": 48,
+              "lineTotal": 816,
+              "selectedSupplier": {
+                "id": "SUP004",
+                "name": "SiliconWave Global Components",
+                "reliability": 97.5,
+                "leadTimeDays": 4
+              },
+              "urgencyContext": {
+                "riskLevel": "HIGH",
+                "daysUntilStockout": 3,
+                "demandTrend": "INCREASING"
+              }
+            },
+            {
+              "sku": "KB201",
+              "productName": "RGB Mechanical Gaming Keyboard",
+              "requestedQuantity": 33,
+              "allocatedQuantity": 27,
+              "isPartial": true,
+              "unitPrice": 18.5,
+              "lineTotal": 499.5,
+              "selectedSupplier": {
+                "id": "SUP003",
+                "name": "Shenzhen Precision Micro Ltd",
+                "reliability": 96.8,
+                "leadTimeDays": 9
+              },
+              "urgencyContext": {
+                "riskLevel": "HIGH",
+                "daysUntilStockout": 3.39,
+                "demandTrend": "INCREASING"
+              }
+            }
+          ],
+          "unfundedItems": [
+            {
+              "sku": "CB301",
+              "productName": "Braided 100W USB-C to USB-C Cable (2m)",
+              "recommendedQuantity": 0,
+              "estimatedCost": 0,
+              "reason": "ZERO_QUANTITY_NEEDED",
+              "riskLevel": "LOW",
+              "daysUntilStockout": 23.85
+            },
+            {
+              "sku": "HP101",
+              "productName": "Wireless Noise-Canceling Headphones",
+              "recommendedQuantity": 25,
+              "estimatedCost": 320,
+              "reason": "MOQ_EXCEEDS_BUDGET",
+              "riskLevel": "MEDIUM",
+              "daysUntilStockout": 4.26
+            }
+          ]
+        },
+        "explanation": {
+          "summary": {
+            "overview": "Optimized plan allocates $1792.50 across 4 product lines (95 total units), reserving $7.50 in uncommitted cash capital (99.58% budget utilization). Resolves 4 urgent HIGH-risk stockout threats.",
+            "budgetStatus": "STRICTLY_COMPLIANT",
+            "totalSpend": 1792.5,
+            "budgetCap": 1800,
+            "remainingCash": 7.5,
+            "highRiskItemsResolved": 4,
+            "highRiskItemsRemainingUnfunded": 0,
+            "topPriorityRecommendation": "Plan is fully aligned with capital limits and safe for manager sign-off."
+          },
+          "lineExplanations": [
+            {
+              "sku": "PB501",
+              "productName": "20,000mAh Fast-Charging Power Bank",
+              "decision": "PURCHASED_FULL",
+              "justification": "Fully funded: Allocated all 27 recommended units ($275.40). Effectively eliminates CRITICAL urgency (1.52 days until stockout, STABLE demand).",
+              "supplierRationale": "Procured from Shenzhen Precision Micro Ltd at wholesale price of $10.20 with 8-day delivery lead time and 96.8% vendor fulfillment reliability.",
+              "riskContext": "Prioritized due to HIGH risk level (STABLE trend, 1.52 days until stockout).",
+              "financialImpact": {
+                "unitPrice": 10.2,
+                "allocatedQuantity": 27,
+                "subtotal": 275.4,
+                "percentageOfTotalBudget": 15.4
+              }
+            },
+            {
+              "sku": "MO401",
+              "productName": "Ergonomic Wireless Optical Mouse",
+              "decision": "PURCHASED_FULL",
+              "justification": "Fully funded: Allocated all 24 recommended units ($201.60). Effectively eliminates CRITICAL urgency (2.67 days until stockout, STABLE demand).",
+              "supplierRationale": "Procured from Apex Electronics Wholesale at wholesale price of $8.40 with 3-day delivery lead time and 99.2% vendor fulfillment reliability.",
+              "riskContext": "Prioritized due to HIGH risk level (STABLE trend, 2.67 days until stockout).",
+              "financialImpact": {
+                "unitPrice": 8.4,
+                "allocatedQuantity": 24,
+                "subtotal": 201.6,
+                "percentageOfTotalBudget": 11.2
+              }
+            },
+            {
+              "sku": "SSD601",
+              "productName": "1TB NVMe M.2 High-Speed SSD",
+              "decision": "PURCHASED_FULL",
+              "justification": "Fully funded: Allocated all 17 recommended units ($816.00). Effectively eliminates CRITICAL urgency (3 days until stockout, INCREASING demand).",
+              "supplierRationale": "Procured from SiliconWave Global Components at wholesale price of $48.00 with 4-day delivery lead time and 97.5% vendor fulfillment reliability.",
+              "riskContext": "Prioritized due to HIGH risk level (INCREASING trend, 3 days until stockout).",
+              "financialImpact": {
+                "unitPrice": 48,
+                "allocatedQuantity": 17,
+                "subtotal": 816,
+                "percentageOfTotalBudget": 45.5
+              }
+            },
+            {
+              "sku": "KB201",
+              "productName": "RGB Mechanical Gaming Keyboard",
+              "decision": "PURCHASED_PARTIAL",
+              "justification": "Partially funded: Allocated 27 of 33 recommended units ($499.50) due to remaining budget ceiling. Mitigates CRITICAL urgency (3.39 days until stockout, INCREASING demand).",
+              "supplierRationale": "Procured from Shenzhen Precision Micro Ltd at wholesale price of $18.50 with 9-day delivery lead time and 96.8% vendor fulfillment reliability.",
+              "riskContext": "Prioritized due to HIGH risk level (INCREASING trend, 3.39 days until stockout).",
+              "financialImpact": {
+                "unitPrice": 18.5,
+                "allocatedQuantity": 27,
+                "subtotal": 499.5,
+                "percentageOfTotalBudget": 27.9
+              }
+            },
+            {
+              "sku": "HP101",
+              "productName": "Wireless Noise-Canceling Headphones",
+              "decision": "UNFUNDED_BUDGET",
+              "justification": "Excluded: Supplier minimum order quantity (MOQ) requires more capital than the remaining budget balance ($7.50).",
+              "supplierRationale": "No supplier purchase generated under this plan.",
+              "riskContext": "Unfunded risk level: MEDIUM (Runway: 4.26 days).",
+              "financialImpact": {
+                "unitPrice": 0,
+                "allocatedQuantity": 0,
+                "subtotal": 0,
+                "percentageOfTotalBudget": 0
+              }
+            }
+          ],
+          "managerCheckpoints": [
+            "Budget Verification: Total spend ($1792.50) is within the $1800.00 ceiling.",
+            "Stockout Protection: 4 high-risk SKU(s) covered with immediate supplier purchase orders.",
+            "Vendor Fulfillment: All selected distributor lead times fall within allowable delivery windows."
+          ]
+        },
+        "executionStats": {
+          "toolsCalled": [
+            "analyze_inventory",
+            "optimize_budget",
+            "explain_purchase_plan"
+          ],
+          "durationMs": 1115
+        }
+      },
+      "executionStatus": "success",
+      "executionDurationMs": 1115,
+      "createdAt": "2026-11-07T10:52:59.318Z"
+    }
+  ]
+}

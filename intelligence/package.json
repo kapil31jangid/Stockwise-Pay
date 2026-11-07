@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
   "check": "tsc --noEmit",
-  "test": "tsx --test inventory.test.ts",
+    "test": "npx tsx --test inventory.test.ts",
   "report": "tsx test-inventory-report.ts",
   "compare": "tsx compare-models.ts"
 },

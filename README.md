@@ -86,19 +86,20 @@ When `NEXT_PUBLIC_API_URL` is omitted, the frontend automatically falls back to 
 
 ## 🛠️ Getting Started
 
+### 1. Run All Tests
 ```bash
-# Navigate to the frontend directory
-cd Stockwise-Pay/frontend
+# Run all 29 automated tests across intelligence, supplier-intelligence, and backend:
+npm test
+```
 
-# Install dependencies (already installed)
-npm install
+### 2. Launch the Development Environment
+```bash
+# In terminal 1: Start Express API Backend (Port 5000)
+npm run dev:backend
 
-# Start development server
-npm run dev
-
-# Or build and launch production server
-npm run build
-npm run start
+# In terminal 2: Start Next.js Frontend (Port 3000)
+npm run dev:frontend
 ```
 
 Visit [http://localhost:3000](http://localhost:3000) to explore StockWise Pay.
+API Health Check: [http://localhost:5000/api/health](http://localhost:5000/api/health)

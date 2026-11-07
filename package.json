@@ -1,0 +1,19 @@
+{
+  "name": "stockwise-pay",
+  "version": "1.0.0",
+  "description": "StockWise Pay - The Cash-Aware AI Restocking Agent for Small Electronics Retailers (PayPal AI Hackathon 2026)",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "migrate": "npm --prefix backend run migrate",
+    "test:intelligence": "npm --prefix intelligence test",
+    "test:suppliers": "npm --prefix supplier-intelligence test",
+    "test:backend": "npm --prefix backend test",
+    "test": "npm run test:intelligence && npm run test:suppliers && npm run test:backend"
+  }
+}
+
