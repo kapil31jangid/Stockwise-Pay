@@ -46,3 +46,4 @@ node_modules/
 .env.*
 !.env.example
 FINAL_PRE_DEPLOYMENT_AUDIT_REPORT.md
+PRE_DEPLOYMENT_AUDIT_REPORT.md

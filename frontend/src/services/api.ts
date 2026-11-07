@@ -15,7 +15,12 @@ import {
   initialBudget,
 } from "./mockData";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
+const isProduction = process.env.NODE_ENV === "production";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (isProduction ? "" : "http://localhost:5000/api");
+
+if (isProduction && !process.env.NEXT_PUBLIC_API_URL) {
+  console.warn("⚠️ Production warning: NEXT_PUBLIC_API_URL is not set. All business requests will fail closed.");
+}
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -69,6 +74,9 @@ const STORAGE_KEYS = {
 };
 
 function getStoredData<T>(key: string, fallback: T): T {
+  if (isProduction) {
+    throw new Error(`Production error: Backend API request failed. LocalStorage business-data fallback is strictly disabled in production.`);
+  }
   if (typeof window === "undefined") return fallback;
   try {
     const raw = localStorage.getItem(key);

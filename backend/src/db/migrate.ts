@@ -35,6 +35,11 @@ async function runMigration() {
     console.log('📄 Executing database schema & seed migration...');
     
     await client.query(sql);
+
+    // Apply incremental column migrations if table already existed
+    await client.query(`
+      ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS transmission_id VARCHAR(100);
+    `);
     console.log('🎉 Supabase tables and seed data created successfully!');
 
     // Verify tables

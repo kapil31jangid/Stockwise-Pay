@@ -52,30 +52,45 @@ function getJwtSecret(): string {
 // In-memory token revocation cache
 const revokedTokenIds = new Set<string>();
 
+const SUPPORTED_ROLES: Array<'LEAD_APPROVER' | 'BUYER' | 'TREASURY' | 'STORE_MANAGER'> = [
+  'LEAD_APPROVER',
+  'BUYER',
+  'TREASURY',
+  'STORE_MANAGER'
+];
+
 /**
- * Revoke an active JWT token persistently in database and in-memory cache
+ * Revoke an active JWT token persistently in database and in-memory cache.
+ * Throws if persistent database write fails to ensure callers never claim
+ * persistent revocation when persistence fails.
  */
 export async function revokeAuthToken(token: string): Promise<boolean> {
-  try {
-    const parts = token.split('.');
-    if (parts.length === 3) {
+  if (!token || typeof token !== 'string') {
+    throw new Error('Cannot revoke empty or invalid token.');
+  }
+
+  const parts = token.split('.');
+  if (parts.length === 3) {
+    try {
       const payload: JwtPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
       if (payload.jti) {
         revokedTokenIds.add(payload.jti);
         const expDate = payload.exp ? new Date(payload.exp * 1000) : new Date(Date.now() + 86400000);
-        await db.revokeToken(payload.jti, expDate).catch(() => {});
+        // Persist directly to database; do NOT swallow error!
+        await db.revokeToken(payload.jti, expDate);
         return true;
       }
+    } catch (parseErr: any) {
+      if (parseErr.message?.includes('database') || parseErr.message?.includes('Database')) {
+        throw parseErr;
+      }
     }
-    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    revokedTokenIds.add(tokenHash);
-    await db.revokeToken(tokenHash, new Date(Date.now() + 86400000)).catch(() => {});
-    return true;
-  } catch {
-    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    revokedTokenIds.add(tokenHash);
-    return true;
   }
+
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  revokedTokenIds.add(tokenHash);
+  await db.revokeToken(tokenHash, new Date(Date.now() + 86400000));
+  return true;
 }
 
 /**
@@ -122,7 +137,8 @@ export function signAuthToken(
 }
 
 /**
- * Verify a cryptographic HMAC-SHA256 JWT
+ * Verify a cryptographic HMAC-SHA256 JWT with strict header and claim validation.
+ * Fails closed if database token revocation check fails.
  */
 export async function verifyAuthToken(token: string): Promise<JwtPayload | null> {
   if (!token || typeof token !== 'string') return null;
@@ -133,13 +149,22 @@ export async function verifyAuthToken(token: string): Promise<JwtPayload | null>
   const signingInput = `${encodedHeader}.${encodedPayload}`;
   const secret = getJwtSecret();
 
-  // Compute expected signature
+  // 1. Validate JWT Header
+  try {
+    const header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8'));
+    if (!header || header.alg !== 'HS256' || header.typ !== 'JWT') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  // 2. Constant-time signature comparison to prevent timing attacks
   const expectedSignature = crypto
     .createHmac('sha256', secret)
     .update(signingInput)
     .digest('base64url');
 
-  // Constant-time signature comparison to prevent timing attacks
   const sigBuffer = Buffer.from(signature, 'utf8');
   const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
   if (sigBuffer.length !== expectedBuffer.length) {
@@ -152,14 +177,21 @@ export async function verifyAuthToken(token: string): Promise<JwtPayload | null>
   try {
     const payload: JwtPayload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
 
+    // 3. Strict Required Claims Validation
+    if (!payload.sub || typeof payload.sub !== 'string') return null;
+    if (!payload.jti || typeof payload.jti !== 'string') return null;
+    if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number') return null;
+    if (payload.exp <= payload.iat) return null;
+    if (!payload.role || !SUPPORTED_ROLES.includes(payload.role)) return null;
+
     // Check expiration
     const now = Math.floor(Date.now() / 1000);
-    if (payload.exp && payload.exp < now) {
+    if (payload.exp < now) {
       return null; // Expired
     }
 
-    // Check revocation (memory cache first, then database)
-    if (payload.jti && revokedTokenIds.has(payload.jti)) {
+    // 4. In-memory revocation cache check
+    if (revokedTokenIds.has(payload.jti)) {
       return null; // Revoked in cache
     }
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
@@ -167,12 +199,17 @@ export async function verifyAuthToken(token: string): Promise<JwtPayload | null>
       return null;
     }
 
-    if (payload.jti) {
-      const isDbRevoked = await db.isTokenRevoked(payload.jti).catch(() => false);
+    // 5. Database revocation check — FAIL CLOSED on error!
+    try {
+      const isDbRevoked = await db.isTokenRevoked(payload.jti);
       if (isDbRevoked) {
         revokedTokenIds.add(payload.jti);
         return null;
       }
+    } catch (dbErr) {
+      // Fail closed: Never permit token if revocation state cannot be verified from database
+      console.error('[Auth Security] Failed to verify token revocation against database — failing closed:', (dbErr as any)?.message);
+      return null;
     }
 
     return payload;

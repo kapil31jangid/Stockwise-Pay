@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import app from '../src/index.js';
 import { db } from '../src/db/index.js';
-import { signAuthToken } from '../src/middleware/auth.js';
+import { signAuthToken, verifyAuthToken } from '../src/middleware/auth.js';
 
 let server: any;
 let baseUrl = 'http://localhost:5055';
@@ -761,5 +761,73 @@ test('Payment History: Protected endpoint requires authorization', async () => {
   const data = await authRes.json() as any;
   assert.equal(data.success, true);
   assert.ok(Array.isArray(data.data));
+});
+
+test('Auth Security: Fail-closed verification rejects tokens when database revocation checks fail', async () => {
+  const validToken = signAuthToken({
+    id: 'USR-001',
+    name: 'Marcus Vance',
+    email: 'marcus.vance@stockwisepay.com',
+    role: 'LEAD_APPROVER'
+  });
+
+  // Temporarily stub db.isTokenRevoked to throw a database connection error
+  const originalIsTokenRevoked = db.isTokenRevoked;
+  db.isTokenRevoked = async () => {
+    throw new Error('Connection terminated unexpectedly (Simulated PostgreSQL partition)');
+  };
+
+  try {
+    const verified = await verifyAuthToken(validToken);
+    assert.equal(verified, null, 'Must fail closed and return null when database verification fails');
+  } finally {
+    db.isTokenRevoked = originalIsTokenRevoked;
+  }
+});
+
+test('Budget Safety: Database transaction rejects payment capture when budget ceiling is exceeded', async () => {
+  const planId = `PLAN-OVER-${Date.now()}`;
+  await db.savePurchasePlan({
+    id: planId,
+    name: 'Overbudget Test Plan',
+    purchasingBudget: 1000.00,
+    calculatedTotal: 999999.00,
+    currentVersion: 1,
+    planStatus: 'approved',
+    selectedItems: [],
+    deferredItems: [],
+    scenarioMode: 'balanced',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const mockPayment = {
+    id: `PAY-EXCEED-${Date.now()}`,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId: `ORD-EXCEED-${Date.now()}`,
+    amount: 999999.00, // Massive amount exceeding $5,000 budget
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox',
+    verifiedStatus: 'CREATED' as const,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  // Save the payment first so the row exists to be locked FOR UPDATE
+  await db.savePayment(mockPayment);
+
+  await assert.rejects(
+    async () => {
+      await db.executePaymentCaptureTransaction({
+        payment: mockPayment,
+        planId: mockPayment.purchasePlanId,
+        amount: mockPayment.amount,
+        actor: 'Test Suite',
+        captureId: `CAP-OVER-${Date.now()}`
+      });
+    },
+    /Budget ceiling exceeded/i
+  );
 });
 

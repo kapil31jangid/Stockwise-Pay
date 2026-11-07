@@ -444,6 +444,7 @@ class DatabaseStore {
   // --- WEBHOOK EVENTS ---
   async saveWebhookEvent(event: {
     id: string;
+    transmissionId?: string;
     eventType: string;
     summary?: string;
     resourceType?: string;
@@ -457,11 +458,12 @@ class DatabaseStore {
           return { saved: false, duplicate: true };
         }
         await this.pgPool.query(`
-          INSERT INTO webhook_events (id, event_type, summary, resource_type, status, raw_payload, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+          INSERT INTO webhook_events (id, transmission_id, event_type, summary, resource_type, status, raw_payload, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
           ON CONFLICT (id) DO NOTHING;
         `, [
           event.id,
+          event.transmissionId || null,
           event.eventType,
           event.summary || null,
           event.resourceType || null,

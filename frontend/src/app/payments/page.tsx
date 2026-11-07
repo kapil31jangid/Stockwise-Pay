@@ -233,8 +233,8 @@ export default function PaymentsPage() {
 
             <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] space-y-1 shrink-0 text-slate-300">
               <p className="font-bold text-blue-300">Designated Settlement Channel:</p>
-              <p>Payer: <span className="font-mono text-white">buyer-retail@stockwise.test</span></p>
-              <p>Network: <span className="font-bold text-emerald-400">PayPal Live Sandbox (PCI-DSS Compliant)</span></p>
+              <p>Gateway: <span className="font-mono text-white">PayPal Orders v2 REST API</span></p>
+              <p>Mode: <span className="font-bold text-emerald-400">PayPal Sandbox Environment</span></p>
             </div>
           </div>
         </div>
@@ -480,7 +480,7 @@ export default function PaymentsPage() {
                   <span>PayPal Sandbox Order: <strong className="font-mono">{pendingOrder?.orderId}</strong></span>
                 </div>
                 <p className="text-[11px] text-blue-800 leading-relaxed">
-                  Please log in and authorize payment using PayPal Sandbox buyer credentials (<strong>buyer-retail@stockwise.test</strong>). Once authorized, capture to settle.
+                  Please log in and authorize payment using your configured PayPal Sandbox buyer account. Once authorized, confirm capture to settle the order.
                 </p>
                 <div className="space-y-2 pt-1">
                   {pendingOrder?.approvalUrl && (
@@ -622,11 +622,11 @@ export default function PaymentsPage() {
                     {/* Method */}
                     <td className="py-3.5 px-4">
                       <span className={`inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded border text-[11px] ${
-                        record.method?.includes('Simulated')
+                        record.method?.includes('Simulated') || record.method === 'Dev Simulator'
                           ? 'text-amber-800 bg-amber-50 border-amber-200'
-                          : 'text-blue-700 bg-blue-50 border-blue-200'
+                          : 'text-emerald-700 bg-emerald-50 border-emerald-200'
                       }`}>
-                        {record.method?.includes('Simulated') ? 'Dev Simulator' : 'PayPal Live Sandbox'}
+                        {record.method?.includes('Simulated') || record.method === 'Dev Simulator' ? 'Dev Simulator (Mock)' : 'PayPal Sandbox (Verified)'}
                       </span>
                     </td>
 

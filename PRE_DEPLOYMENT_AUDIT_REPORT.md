@@ -12,7 +12,7 @@
 StockWise Pay is an AI-assisted, budget-aware replenishment and checkout platform for independent electronics retailers. It integrates inventory demand forecasting (EMA), multi-criteria supplier evaluation, knapsack-based budget optimization, version-locked managerial approvals, and server-side PayPal Sandbox Orders v2 capture.
 
 - **Overall Project Readiness:** **READY FOR SANDBOX DEMONSTRATION ONLY**  
-  The full end-to-end procurement and payment pipeline is operational, tested, and reproducible. All **49 automated unit, integration, and security tests** pass across all three core modules (`intelligence`, `supplier-intelligence`, `backend`). Frontend compiles cleanly with static page pre-rendering and edge middleware redirect guards.
+  The full end-to-end procurement and payment pipeline is operational, tested, and reproducible. All **58 automated unit, integration, and security tests** pass across all three core modules (`intelligence`, `supplier-intelligence`, `backend`). Frontend compiles cleanly with static page pre-rendering and edge middleware redirect guards.
 - **Major Strengths:**
   1. **Strict Version-Locked Approval Gate:** Modifying any plan item, quantity, or budget immediately increments the plan version and invalidates prior approvals. Unapproved or modified plans strictly cannot generate PayPal orders (`400 Bad Request`).
   2. **Cryptographic JWT Authentication & RBAC:** Tokens are HMAC-SHA256 signed using Node.js `crypto` with `timingSafeEqual` constant-time verification. Arbitrary self-registration is strictly rejected (`401 Invalid Credentials`). Role permissions (`requireRole`, `requirePermission`) forbid unauthorized actors (e.g., Buyer role cannot approve plans or execute PayPal captures).

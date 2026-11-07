@@ -179,7 +179,8 @@ class PayPalService {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
-          'Prefer': 'return=representation'
+          'Prefer': 'return=representation',
+          'PayPal-Request-Id': orderPayload.purchase_units[0].invoice_id
         },
         body: JSON.stringify(orderPayload)
       });
@@ -348,7 +349,35 @@ class PayPalService {
           }
         }
 
-        // Step C: Validate buyer authorization status explicitly
+        // Step C: Validate buyer authorization status explicitly or reconcile already completed orders
+        if (liveOrder.status === 'COMPLETED') {
+          // Reconcile PayPal-success scenario where order was already captured in PayPal
+          const completedCapture = liveOrder.purchase_units?.[0]?.payments?.captures?.[0];
+          if (completedCapture && completedCapture.status === 'COMPLETED' && completedCapture.id) {
+            const payerEmail = liveOrder.payer?.email_address || 'buyer@stockwise.test';
+            const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+              payment: existingPayment,
+              planId: existingPayment.purchasePlanId,
+              amount: existingPayment.amount,
+              actor,
+              captureId: completedCapture.id,
+              rawPaypalResponse: liveOrder,
+              payerEmail
+            });
+
+            return {
+              captureId: completedCapture.id,
+              orderId,
+              status: 'COMPLETED',
+              amount: completedPayment.amount,
+              currency: completedPayment.currency,
+              payerEmail,
+              transactionTime: completedPayment.updatedAt,
+              isMock: false
+            };
+          }
+        }
+
         if (liveOrder.status !== 'APPROVED') {
           if (process.env.NODE_ENV === 'test') {
             console.warn(`[PayPal Sandbox] Order ${orderId} in test mode (${liveOrder.status}) — proceeding with test execution.`);
@@ -357,17 +386,51 @@ class PayPalService {
           }
         }
 
-        // Step D: Execute server capture
+        // Step D: Execute server capture with idempotency header
         const res = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'PayPal-Request-Id': `CAP-${orderId}`
           }
         });
 
         if (!res.ok) {
           const errorText = await res.text();
+          if (errorText.includes('ORDER_ALREADY_CAPTURED')) {
+            // Reconcile already captured order in PayPal
+            const refetchRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
+              method: 'GET',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+            });
+            if (refetchRes.ok) {
+              const reconciledOrder = await refetchRes.json() as any;
+              const cap = reconciledOrder.purchase_units?.[0]?.payments?.captures?.[0];
+              if (cap?.id) {
+                const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
+                  payment: existingPayment,
+                  planId: existingPayment.purchasePlanId,
+                  amount: existingPayment.amount,
+                  actor,
+                  captureId: cap.id,
+                  rawPaypalResponse: reconciledOrder,
+                  payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test'
+                });
+                return {
+                  captureId: cap.id,
+                  orderId,
+                  status: 'COMPLETED',
+                  amount: completedPayment.amount,
+                  currency: completedPayment.currency,
+                  payerEmail: completedPayment.payerEmail || 'buyer@stockwise.test',
+                  transactionTime: completedPayment.updatedAt,
+                  isMock: false
+                };
+              }
+            }
+          }
+
           if (errorText.includes('ORDER_NOT_APPROVED')) {
             if (process.env.NODE_ENV === 'test') {
               console.warn(`[PayPal Sandbox] Order ${orderId} automated test/demo fulfillment in test mode.`);
@@ -402,7 +465,25 @@ class PayPalService {
 
         const captureData = await res.json() as any;
         const capture = captureData.purchase_units?.[0]?.payments?.captures?.[0];
-        const captureId = capture?.id || `CAP-${Date.now()}`;
+
+        // Require actual PayPal capture ID and verify returned data
+        if (!capture?.id) {
+          throw new Error(`Malformed PayPal capture response: Missing capture ID. Response: ${JSON.stringify(captureData)}`);
+        }
+        if (capture.status !== 'COMPLETED') {
+          throw new Error(`PayPal capture not completed (current status: ${capture.status}).`);
+        }
+
+        const returnedAmount = Number(capture.amount?.value);
+        const returnedCurrency = capture.amount?.currency_code;
+        if (!isNaN(returnedAmount) && Math.abs(returnedAmount - existingPayment.amount) > 0.01) {
+          throw new Error(`Payment verification failed: Amount returned by PayPal ($${returnedAmount}) does not match expected plan total ($${existingPayment.amount}).`);
+        }
+        if (returnedCurrency && returnedCurrency !== existingPayment.currency) {
+          throw new Error(`Payment verification failed: Currency returned (${returnedCurrency}) does not match expected (${existingPayment.currency}).`);
+        }
+
+        const captureId = capture.id;
         const payerEmail = captureData.payer?.email_address || 'buyer-retail@stockwise.test';
 
         const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
@@ -427,9 +508,9 @@ class PayPalService {
         };
       }
 
-      // Offline / Simulation execution
+      // Offline / Simulation execution strictly restricted to dev/test
       if (process.env.NODE_ENV === 'production') {
-        throw new Error('FATAL: Valid PayPal Sandbox/Production credentials are required in production.');
+        throw new Error('FATAL: PayPal Simulator is disabled in production. Valid PayPal credentials are required.');
       }
 
       const captureId = `CAP-SIM-${Date.now()}`;
@@ -541,7 +622,8 @@ class PayPalService {
    */
   async processWebhook(headers: Record<string, string | string[] | undefined>, event: any) {
     const transmissionId = (headers['paypal-transmission-id'] || headers['PAYPAL-TRANSMISSION-ID']) as string | undefined;
-    const eventId = transmissionId || event?.id;
+    // event.id is the authoritative stable deduplication identifier; transmissionId is transport header
+    const eventId = event?.id || transmissionId;
 
     if (!eventId) {
       throw new Error('Invalid webhook request: Missing event ID.');
@@ -571,9 +653,10 @@ class PayPalService {
       throw new Error(`PayPal Webhook verification failed: ${verification.error || 'Invalid signature'}`);
     }
 
-    // 3. Save to database webhook_events table with unique constraint
+    // 3. Save to database webhook_events table with unique constraint and separate transmission ID
     const { saved, duplicate } = await db.saveWebhookEvent({
       id: eventId,
+      transmissionId,
       eventType: event.event_type || 'UNKNOWN',
       summary: event.summary,
       resourceType: event.resource_type,

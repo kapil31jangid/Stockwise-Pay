@@ -129,10 +129,13 @@ router.post('/login', async (req: Request, res: Response) => {
 router.post('/logout', async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7).trim();
-      await revokeAuthToken(token);
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(400).json({ success: false, error: 'Authorization Bearer token required for logout.' });
     }
+
+    const token = authHeader.substring(7).trim();
+    // This will persist revocation to database or throw on failure
+    await revokeAuthToken(token);
 
     const actor = req.body?.actor || 'User';
     await db.saveAuditLog({
@@ -143,9 +146,13 @@ router.post('/logout', async (req: Request, res: Response) => {
       details: { timestamp: new Date().toISOString() }
     });
 
-    res.json({ success: true, message: 'Logged out successfully. Token persistently revoked.' });
+    res.json({ success: true, message: 'Logged out successfully. Token persistently revoked across all instances.' });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({
+      success: false,
+      error: `Persistent logout failed: ${err.message || 'Unable to persist token revocation.'}`,
+      code: 'REVOCATION_PERSISTENCE_FAILED'
+    });
   }
 });
 

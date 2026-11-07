@@ -42,9 +42,15 @@ export const PRESET_USERS: User[] = [
     department: "Finance & Treasury",
     avatarInitials: "DC",
     badge: "TREASURY",
-    permissions: ["BUDGET_EDIT", "AUDIT_VIEW", "PAYMENT_AUDIT", "PLAN_APPROVE"],
+    permissions: ["BUDGET_EDIT", "AUDIT_VIEW", "PAYMENT_AUDIT", "PLAN_APPROVE", "PAYMENT_EXECUTE"],
   },
 ];
+
+export const DEMO_CREDENTIALS: Record<string, string> = {
+  "marcus.vance@stockwisepay.com": "ApproverPass2026!",
+  "elena.rostova@stockwisepay.com": "BuyerPass2026!",
+  "david.chen@stockwisepay.com": "TreasuryPass2026!",
+};
 
 interface AuthContextType {
   user: User | null;
@@ -101,11 +107,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
       const targetEmail = email || "marcus.vance@stockwisepay.com";
+      const resolvedPassword = password || DEMO_CREDENTIALS[targetEmail] || "";
 
       const res = await fetch(`${apiBase}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: targetEmail, password }),
+        body: JSON.stringify({ email: targetEmail, password: resolvedPassword }),
       });
 
       if (!res.ok) {
@@ -148,7 +155,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchAccount = (userId: string) => {
     const selected = PRESET_USERS.find((u) => u.id === userId);
     if (selected) {
-      login(selected.email).catch((err) => {
+      const pass = DEMO_CREDENTIALS[selected.email] || "";
+      login(selected.email, pass).catch((err) => {
         console.error("Account switch failed:", err);
       });
     }

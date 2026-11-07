@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
 
 CREATE TABLE IF NOT EXISTS webhook_events (
   id VARCHAR(100) PRIMARY KEY,
+  transmission_id VARCHAR(100),
   event_type VARCHAR(100) NOT NULL,
   summary TEXT,
   resource_type VARCHAR(100),

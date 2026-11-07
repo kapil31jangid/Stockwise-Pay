@@ -17,7 +17,7 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
-import { useAuth, PRESET_USERS } from "@/context/AuthContext";
+import { useAuth, PRESET_USERS, DEMO_CREDENTIALS } from "@/context/AuthContext";
 
 function LoginContent() {
   const router = useRouter();
@@ -37,7 +37,8 @@ function LoginContent() {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      await login(demoUser.email, "demo-secure-pass");
+      const pass = DEMO_CREDENTIALS[demoUser.email] || "ApproverPass2026!";
+      await login(demoUser.email, pass);
       window.location.href = redirectUrl;
     } catch (err: any) {
       setErrorMsg(err.message || "Failed to log in with demo account");
