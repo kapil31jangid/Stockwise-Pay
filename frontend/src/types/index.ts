@@ -108,7 +108,7 @@ export interface PaymentRecord {
   amount: number;
   currency: string;
   date: string;
-  method: "PayPal Sandbox" | "PayPal Pay in 4" | "PayPal Business";
+  method: "PayPal Sandbox" | "PayPal Pay in 4" | "PayPal Business" | "Dev Simulator";
   status: "completed" | "processing" | "pending_capture" | "refunded";
   paypalTransactionId: string;
   invoiceNumber: string;

@@ -228,3 +228,83 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
+-- User Authentication & Roles
+CREATE TABLE IF NOT EXISTS users (
+  id VARCHAR(50) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL,
+  display_role VARCHAR(100) NOT NULL,
+  department VARCHAR(100) NOT NULL,
+  avatar_initials VARCHAR(10) NOT NULL,
+  badge VARCHAR(50) NOT NULL,
+  permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+  token_hash VARCHAR(64) PRIMARY KEY,
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id VARCHAR(100) PRIMARY KEY,
+  event_type VARCHAR(100) NOT NULL,
+  summary TEXT,
+  resource_type VARCHAR(100),
+  status VARCHAR(50) NOT NULL DEFAULT 'VERIFIED',
+  raw_payload JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Seed System Personas with Bcrypt Password Hashes
+INSERT INTO users (id, name, email, password_hash, role, display_role, department, avatar_initials, badge, permissions)
+VALUES
+  (
+    'USR-001',
+    'Marcus Vance',
+    'marcus.vance@stockwisepay.com',
+    '$2b$10$6eq.Sj2yWsaYxHgNYjxtZucnPMsGmsgeWXM6kD5w5moOYU/oKqnK.',
+    'LEAD_APPROVER',
+    'Inventory Lead / Approver',
+    'Operations & Supply',
+    'MV',
+    'LEAD APPROVER',
+    '["INVENTORY_VIEW", "INVENTORY_EDIT", "PLAN_GENERATE", "PLAN_APPROVE", "PAYMENT_EXECUTE"]'::jsonb
+  ),
+  (
+    'USR-002',
+    'Elena Rostova',
+    'elena.rostova@stockwisepay.com',
+    '$2b$10$A.4//Ploce25Alhbt1aGE.fjpsVOXtWAiiE.U0tsiC/WdzbCJB6Y2',
+    'BUYER',
+    'Procurement Specialist',
+    'Supplier Relations',
+    'ER',
+    'BUYER',
+    '["INVENTORY_VIEW", "SUPPLIERS_COMPARE", "PLAN_GENERATE"]'::jsonb
+  ),
+  (
+    'USR-003',
+    'David Chen',
+    'david.chen@stockwisepay.com',
+    '$2b$10$q6sAjkDwmI7ttOEkwJimqOXnJ0q.wUbgBLecgACZ41CJgeo32kX7m',
+    'TREASURY',
+    'Chief Financial Officer',
+    'Finance & Treasury',
+    'DC',
+    'TREASURY',
+    '["BUDGET_EDIT", "AUDIT_VIEW", "PAYMENT_AUDIT", "PLAN_APPROVE", "PAYMENT_EXECUTE"]'::jsonb
+  )
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  password_hash = EXCLUDED.password_hash,
+  role = EXCLUDED.role,
+  display_role = EXCLUDED.display_role,
+  department = EXCLUDED.department,
+  permissions = EXCLUDED.permissions;
+
+

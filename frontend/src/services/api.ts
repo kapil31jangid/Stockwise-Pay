@@ -23,18 +23,17 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   if (typeof window !== "undefined") {
     let token = "";
     try {
-      const stored = localStorage.getItem("stockwise_auth_user");
-      if (stored && stored !== "logged_out") {
-        const u = JSON.parse(stored);
-        if (u?.id) {
-          token = `jwt-stockwise-${u.id}`;
-        }
+      const storedToken = localStorage.getItem("stockwise_jwt_token");
+      if (storedToken && storedToken.split(".").length === 3) {
+        token = storedToken;
       }
     } catch {}
 
     if (!token && typeof document !== "undefined") {
       const match = document.cookie.match(/stockwise_token=([^;]+)/);
-      if (match) token = match[1];
+      if (match && match[1] && match[1].split(".").length === 3) {
+        token = match[1];
+      }
     }
 
     if (token && !headers.has("Authorization")) {
@@ -47,6 +46,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     if (res.status === 401 && typeof window !== "undefined") {
       try {
         localStorage.setItem("stockwise_auth_user", "logged_out");
+        localStorage.removeItem("stockwise_jwt_token");
         document.cookie = "stockwise_token=; path=/; max-age=0; SameSite=Lax";
       } catch {}
       window.location.replace("/login");
@@ -58,7 +58,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (json && json.data !== undefined ? json.data : json) as T;
 }
 
-// Storage Keys for persistent mock state
+// Storage Keys for standalone offline development only
 const STORAGE_KEYS = {
   INVENTORY: "stockwise_inventory_v1",
   SUPPLIERS: "stockwise_suppliers_v1",
@@ -141,32 +141,26 @@ export const api = {
       id: `item-${Date.now()}`,
     };
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/inventory`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sku: newItem.sku,
-            name: newItem.name,
-            category: newItem.category,
-            currentStock: newItem.currentStock,
-            safetyStock: newItem.reorderPoint,
-            unitCost: newItem.unitCost,
-            sellingPrice: newItem.retailPrice,
-            preferredVendorId: newItem.supplierId,
-          }),
-        });
-        if (res) {
-          return {
-            ...newItem,
-            id: res.sku ? `item-${res.sku.toLowerCase()}` : newItem.id,
-            retailPrice: Number(res.sellingPrice ?? newItem.retailPrice),
-            reorderPoint: Number(res.safetyStock ?? newItem.reorderPoint),
-          };
-        }
-      } catch (err) {
-        console.warn("Backend addInventoryItem error, falling back to local:", err);
-      }
+      const res = await fetchJson<any>(`${API_BASE_URL}/inventory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sku: newItem.sku,
+          name: newItem.name,
+          category: newItem.category,
+          currentStock: newItem.currentStock,
+          safetyStock: newItem.reorderPoint,
+          unitCost: newItem.unitCost,
+          sellingPrice: newItem.retailPrice,
+          preferredVendorId: newItem.supplierId,
+        }),
+      });
+      return {
+        ...newItem,
+        id: res.sku ? `item-${res.sku.toLowerCase()}` : newItem.id,
+        retailPrice: Number(res.sellingPrice ?? newItem.retailPrice),
+        reorderPoint: Number(res.safetyStock ?? newItem.reorderPoint),
+      };
     }
     const current = getStoredData(STORAGE_KEYS.INVENTORY, initialInventory);
     const updated = [newItem, ...current];
@@ -180,27 +174,22 @@ export const api = {
       id: `item-csv-${Date.now()}-${idx}`,
     }));
     if (API_BASE_URL) {
-      try {
-        const payload = newItems.map((it) => ({
-          sku: it.sku,
-          name: it.name,
-          category: it.category,
-          currentStock: it.currentStock,
-          safetyStock: it.reorderPoint,
-          unitCost: it.unitCost,
-          sellingPrice: it.retailPrice,
-          preferredVendorId: it.supplierId,
-        }));
-        await fetchJson<any>(`${API_BASE_URL}/inventory/batch`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        // Reload all inventory from backend to get freshly calculated metrics
-        return await this.getInventory();
-      } catch (err) {
-        console.warn("Backend importInventoryBatch error, falling back to local:", err);
-      }
+      const payload = newItems.map((it) => ({
+        sku: it.sku,
+        name: it.name,
+        category: it.category,
+        currentStock: it.currentStock,
+        safetyStock: it.reorderPoint,
+        unitCost: it.unitCost,
+        sellingPrice: it.retailPrice,
+        preferredVendorId: it.supplierId,
+      }));
+      await fetchJson<any>(`${API_BASE_URL}/inventory/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return await this.getInventory();
     }
     const current = getStoredData(STORAGE_KEYS.INVENTORY, initialInventory);
     const updated = [...newItems, ...current];
@@ -210,37 +199,31 @@ export const api = {
 
   async updateInventoryItem(id: string, updates: Partial<InventoryItem>): Promise<InventoryItem> {
     if (API_BASE_URL) {
-      try {
-        const sku = updates.sku || id.replace(/^item-/, "").toUpperCase();
-        const payload: any = { ...updates };
-        if (updates.retailPrice !== undefined) payload.sellingPrice = updates.retailPrice;
-        if (updates.reorderPoint !== undefined) payload.safetyStock = updates.reorderPoint;
-        const res = await fetchJson<any>(`${API_BASE_URL}/inventory/${sku}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (res) {
-          return {
-            id,
-            sku: res.sku || sku,
-            name: res.name || updates.name || "Item",
-            category: res.category || updates.category || "Accessories",
-            currentStock: Number(res.currentStock ?? updates.currentStock ?? 0),
-            reorderPoint: Number(res.safetyStock ?? updates.reorderPoint ?? 15),
-            targetStock: Number(updates.targetStock || 50),
-            unitCost: Number(res.unitCost ?? updates.unitCost ?? 10),
-            retailPrice: Number(res.sellingPrice ?? updates.retailPrice ?? 25),
-            salesVelocityPerWeek: Number(updates.salesVelocityPerWeek || 10),
-            supplierName: updates.supplierName || "Apex Wholesale",
-            supplierId: res.preferredVendorId || updates.supplierId || "SUP001",
-            status: updates.status || "in_stock",
-            lastRestocked: updates.lastRestocked || new Date().toISOString().split("T")[0],
-          };
-        }
-      } catch (err) {
-        console.warn("Backend updateInventoryItem error, falling back to local:", err);
-      }
+      const sku = updates.sku || id.replace(/^item-/, "").toUpperCase();
+      const payload: any = { ...updates };
+      if (updates.retailPrice !== undefined) payload.sellingPrice = updates.retailPrice;
+      if (updates.reorderPoint !== undefined) payload.safetyStock = updates.reorderPoint;
+      const res = await fetchJson<any>(`${API_BASE_URL}/inventory/${sku}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return {
+        id,
+        sku: res.sku || sku,
+        name: res.name || updates.name || "Item",
+        category: res.category || updates.category || "Accessories",
+        currentStock: Number(res.currentStock ?? updates.currentStock ?? 0),
+        reorderPoint: Number(res.safetyStock ?? updates.reorderPoint ?? 15),
+        targetStock: Number(updates.targetStock || 50),
+        unitCost: Number(res.unitCost ?? updates.unitCost ?? 10),
+        retailPrice: Number(res.sellingPrice ?? updates.retailPrice ?? 25),
+        salesVelocityPerWeek: Number(updates.salesVelocityPerWeek || 10),
+        supplierName: updates.supplierName || "Apex Wholesale",
+        supplierId: res.preferredVendorId || updates.supplierId || "SUP001",
+        status: updates.status || "in_stock",
+        lastRestocked: updates.lastRestocked || new Date().toISOString().split("T")[0],
+      };
     }
     const current = getStoredData(STORAGE_KEYS.INVENTORY, initialInventory);
     const updated = current.map((i) => (i.id === id ? { ...i, ...updates } : i));
@@ -253,35 +236,29 @@ export const api = {
   // --- SUPPLIERS API ---
   async getSuppliers(): Promise<Supplier[]> {
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/suppliers`);
-        const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-        if (list.length > 0) {
-          return list.map((s: any, idx: number) => ({
-            id: s.id || `sup-${idx + 1}`,
-            name: s.name || `Supplier #${idx + 1}`,
-            rating: Number(s.rating || (s.reliabilityScore ? s.reliabilityScore / 20 : 4.8)),
-            leadTimeDays: Number(s.leadTimeDays || s.estimatedLeadTimeDays || 3),
-            moq: Number(s.moq || 20),
-            paymentTerms: s.paymentTerms || "Net 30 / PayPal",
-            location: s.location || "US Domestic Hub",
-            reliability: Number(s.reliability || s.reliabilityScore || 98.0),
-            contactEmail: s.contactEmail || "orders@supplier.com",
-            contactPhone: s.contactPhone || "+1 (800) 555-0100",
-            categorySpecialties: Array.isArray(s.categorySpecialties) ? s.categorySpecialties : Array.isArray(s.specialties) ? s.specialties : ["Electronics"],
-            offers: Array.isArray(s.offers) ? s.offers.map((o: any) => ({
-              productId: o.productId || `item-${o.sku ? o.sku.toLowerCase() : '1'}`,
-              sku: o.sku,
-              unitPrice: Number(o.unitPrice ?? o.unitCost ?? 10),
-              moq: Number(o.moq ?? o.minOrderQty ?? 20),
-              leadTimeDays: Number(o.leadTimeDays || s.leadTimeDays || s.estimatedLeadTimeDays || 3),
-              bulkDiscount: o.bulkDiscount || o.bulkDiscountNote || undefined,
-            })) : [],
-          }));
-        }
-      } catch (err) {
-        console.warn("Failed to fetch suppliers from API, using fallback:", err);
-      }
+      const res = await fetchJson<any>(`${API_BASE_URL}/suppliers`);
+      const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+      return list.map((s: any, idx: number) => ({
+        id: s.id || `sup-${idx + 1}`,
+        name: s.name || `Supplier #${idx + 1}`,
+        rating: Number(s.rating || (s.reliabilityScore ? s.reliabilityScore / 20 : 4.8)),
+        leadTimeDays: Number(s.leadTimeDays || s.estimatedLeadTimeDays || 3),
+        moq: Number(s.moq || 20),
+        paymentTerms: s.paymentTerms || "Net 30 / PayPal",
+        location: s.location || "US Domestic Hub",
+        reliability: Number(s.reliability || s.reliabilityScore || 98.0),
+        contactEmail: s.contactEmail || "orders@supplier.com",
+        contactPhone: s.contactPhone || "+1 (800) 555-0100",
+        categorySpecialties: Array.isArray(s.categorySpecialties) ? s.categorySpecialties : Array.isArray(s.specialties) ? s.specialties : ["Electronics"],
+        offers: Array.isArray(s.offers) ? s.offers.map((o: any) => ({
+          productId: o.productId || `item-${o.sku ? o.sku.toLowerCase() : '1'}`,
+          sku: o.sku,
+          unitPrice: Number(o.unitPrice ?? o.unitCost ?? 10),
+          moq: Number(o.moq ?? o.minOrderQty ?? 20),
+          leadTimeDays: Number(o.leadTimeDays || s.leadTimeDays || s.estimatedLeadTimeDays || 3),
+          bulkDiscount: o.bulkDiscount || o.bulkDiscountNote || undefined,
+        })) : [],
+      }));
     }
     return getStoredData(STORAGE_KEYS.SUPPLIERS, initialSuppliers);
   },
@@ -290,7 +267,7 @@ export const api = {
   async getPurchasePlans(): Promise<PurchasePlan[]> {
     let raw: any[] = [];
     if (API_BASE_URL) {
-      const res = await fetchJson<any[]>(`${API_BASE_URL}/purchase-plans`);
+      const res = await fetchJson<any[]>(`${API_BASE_URL}/plans`);
       raw = Array.isArray(res) ? res : [];
     } else {
       raw = getStoredData(STORAGE_KEYS.PLANS, initialPurchasePlans);
@@ -338,7 +315,7 @@ export const api = {
 
   async savePurchasePlan(plan: PurchasePlan): Promise<PurchasePlan> {
     if (API_BASE_URL) {
-      return fetchJson<PurchasePlan>(`${API_BASE_URL}/purchase-plans/${plan.id}`, {
+      return fetchJson<PurchasePlan>(`${API_BASE_URL}/plans/${plan.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(plan),
@@ -414,37 +391,31 @@ export const api = {
   // --- AI RECOMMENDATIONS API ---
   async getAIRecommendations(): Promise<AIRecommendation[]> {
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/ai-recommendations`);
-        const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-        if (list.length > 0) {
-          return list.map((r: any, idx: number) => ({
-            id: r.id || `rec-${idx}`,
-            productId: r.productId || `prod-${idx}`,
-            productName: r.productName || "Electronics Item",
-            sku: r.sku || "SKU",
-            action: r.action || "URGENT_RESTOCK",
-            urgency: r.urgency || "high",
-            explanation: r.explanation || "Restocking recommended based on sales runway.",
-            metricHighlights: Array.isArray(r.metricHighlights) ? r.metricHighlights : [],
-            recommendedQty: Number(r.recommendedQty || 20),
-            projectedRunoutDays: Number(r.projectedRunoutDays || 3),
-            costSavings: Number(r.costSavings || 0),
-            suggestedSupplier: r.suggestedSupplier || "Apex Wholesale Direct",
-            unitCost: Number(r.unitCost || 10),
-            totalEstimatedCost: Number(r.totalEstimatedCost || 200),
-            status: r.status || "pending_review",
-            simulationImpact: r.simulationImpact || {
-              stockoutRiskBefore: 90,
-              stockoutRiskAfter: 5,
-              estimatedMargin: 58.0,
-              weeklyDemandTrend: "+25% surge",
-            },
-          }));
-        }
-      } catch (err) {
-        console.warn("Backend getAIRecommendations error, using stored:", err);
-      }
+      const res = await fetchJson<any>(`${API_BASE_URL}/agent`);
+      const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+      return list.map((r: any, idx: number) => ({
+        id: r.id || `rec-${idx}`,
+        productId: r.productId || `prod-${idx}`,
+        productName: r.productName || "Electronics Item",
+        sku: r.sku || "SKU",
+        action: r.action || "URGENT_RESTOCK",
+        urgency: r.urgency || "high",
+        explanation: r.explanation || "Restocking recommended based on sales runway.",
+        metricHighlights: Array.isArray(r.metricHighlights) ? r.metricHighlights : [],
+        recommendedQty: Number(r.recommendedQty || 20),
+        projectedRunoutDays: Number(r.projectedRunoutDays || 3),
+        costSavings: Number(r.costSavings || 0),
+        suggestedSupplier: r.suggestedSupplier || "Apex Wholesale Direct",
+        unitCost: Number(r.unitCost || 10),
+        totalEstimatedCost: Number(r.totalEstimatedCost || 200),
+        status: r.status || "pending_review",
+        simulationImpact: r.simulationImpact || {
+          stockoutRiskBefore: 90,
+          stockoutRiskAfter: 5,
+          estimatedMargin: 58.0,
+          weeklyDemandTrend: "+25% surge",
+        },
+      }));
     }
     return getStoredData(STORAGE_KEYS.RECOMMENDATIONS, initialAIRecommendations);
   },
@@ -454,15 +425,11 @@ export const api = {
     status: "approved" | "dismissed" | "pending_review"
   ): Promise<AIRecommendation> {
     if (API_BASE_URL) {
-      try {
-        return await fetchJson<AIRecommendation>(`${API_BASE_URL}/ai-recommendations/${id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status }),
-        });
-      } catch (err) {
-        console.warn("Backend updateRecommendationStatus error, falling back to local:", err);
-      }
+      return await fetchJson<AIRecommendation>(`${API_BASE_URL}/ai-recommendations/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
     }
     const current = getStoredData(STORAGE_KEYS.RECOMMENDATIONS, initialAIRecommendations);
     const updated = current.map((r) => (r.id === id ? { ...r, status } : r));
@@ -475,40 +442,28 @@ export const api = {
   // --- BUDGET API ---
   async getBudget(): Promise<BudgetConfig> {
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/budget`);
-        if (res) {
-          return {
-            monthlyBudget: Number(res.monthlyBudget ?? 15000),
-            spentThisMonth: Number(res.spentThisMonth ?? res.spentAmount ?? 0),
-            allocatedPending: Number(res.allocatedPending ?? res.allocatedAmount ?? 0),
-          };
-        }
-      } catch (err) {
-        console.warn("Failed to fetch budget from API, using fallback:", err);
-      }
+      const res = await fetchJson<any>(`${API_BASE_URL}/budget`);
+      return {
+        monthlyBudget: Number(res.monthlyBudget ?? 5000),
+        spentThisMonth: Number(res.spentThisMonth ?? res.spentAmount ?? 0),
+        allocatedPending: Number(res.allocatedPending ?? res.allocatedAmount ?? 0),
+      };
     }
     return getStoredData(STORAGE_KEYS.BUDGET, initialBudget);
   },
 
   async updateBudget(updates: Partial<BudgetConfig>): Promise<BudgetConfig> {
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/budget`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(updates),
-        });
-        if (res) {
-          return {
-            monthlyBudget: Number(res.monthlyBudget ?? 15000),
-            spentThisMonth: Number(res.spentThisMonth ?? res.spentAmount ?? 0),
-            allocatedPending: Number(res.allocatedPending ?? res.allocatedAmount ?? 0),
-          };
-        }
-      } catch (err) {
-        console.warn("Failed to update budget on API, updating local:", err);
-      }
+      const res = await fetchJson<any>(`${API_BASE_URL}/budget`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      return {
+        monthlyBudget: Number(res.monthlyBudget ?? 5000),
+        spentThisMonth: Number(res.spentThisMonth ?? res.spentAmount ?? 0),
+        allocatedPending: Number(res.allocatedPending ?? res.allocatedAmount ?? 0),
+      };
     }
     const current = getStoredData(STORAGE_KEYS.BUDGET, initialBudget);
     const updated = { ...current, ...updates };
@@ -519,34 +474,26 @@ export const api = {
   // --- PAYMENTS & PAYPAL SANDBOX API ---
   async getPayments(): Promise<PaymentRecord[]> {
     if (API_BASE_URL) {
-      try {
-        const res = await fetchJson<any>(`${API_BASE_URL}/payments`);
-        const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
-        return list.map((p: any, idx: number) => ({
-          id: p.id || `pay-${idx}`,
-          orderId: p.paypalOrderId || p.orderId || `ORD-${p.id || idx}`,
-          planTitle: p.planTitle || (p.purchasePlanId ? `Restock Plan (${p.purchasePlanId})` : "November Fast-Moving Restock Batch #1"),
-          supplierName: p.supplierName || "VoltCore & Apex Wholesale Consolidated",
-          amount: Number(p.amount ?? 0),
-          currency: p.currency || "USD",
-          date: p.createdAt ? (p.createdAt.includes('T') ? p.createdAt.replace('T', ' ').substring(0, 16) : p.createdAt) : (p.date || "2026-11-07 12:00"),
-          method: p.paymentMethod || p.method || "PayPal Sandbox",
-          status: (p.verifiedStatus || p.status || "completed").toLowerCase(),
-          paypalTransactionId: p.paypalCaptureId || p.paypalTransactionId || `CAP-${p.id || idx}`,
-          invoiceNumber: p.invoiceNumber || `INV-SW-${10000 + idx}`,
-          itemSummary: p.itemSummary || `${p.purchasePlanId || 'Restock'} - Electronics Restock Batch`,
-        }));
-      } catch (err) {
-        console.warn("Failed to fetch payments from backend, using fallback:", err);
-      }
+      const res = await fetchJson<any>(`${API_BASE_URL}/paypal/payments`);
+      const list = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+      return list.map((p: any, idx: number) => ({
+        id: p.id || `pay-${idx}`,
+        orderId: p.paypalOrderId || p.orderId || `ORD-${p.id || idx}`,
+        planTitle: p.planTitle || (p.purchasePlanId ? `Restock Plan (${p.purchasePlanId})` : "Restock Order"),
+        supplierName: p.supplierName || "Consolidated Supplier Network",
+        amount: Number(p.amount ?? 0),
+        currency: p.currency || "USD",
+        date: p.createdAt ? (p.createdAt.includes('T') ? p.createdAt.replace('T', ' ').substring(0, 16) : p.createdAt) : (p.date || "2026-11-07 12:00"),
+        method: p.paymentMethod || p.method || "PayPal Sandbox",
+        status: (p.verifiedStatus || p.status || "completed").toLowerCase(),
+        paypalTransactionId: p.paypalCaptureId || p.paypalTransactionId || `CAP-${p.id || idx}`,
+        invoiceNumber: p.invoiceNumber || `INV-SW-${10000 + idx}`,
+        itemSummary: p.itemSummary || `${p.purchasePlanId || 'Restock'} - Electronics Batch`,
+      }));
     }
     return getStoredData(STORAGE_KEYS.PAYMENTS, initialPayments);
   },
 
-  /**
-   * Prepares or creates a PayPal Sandbox Order (Ready for Node.js Express backend integration)
-   * Express equivalent: POST /api/paypal/create-order
-   */
   async createPayPalOrder(orderPayload: {
     planId: string;
     amount: number;
@@ -554,13 +501,12 @@ export const api = {
     items: { name: string; quantity: number; unitPrice: number }[];
   }): Promise<{ orderId: string; approvalUrl: string; status: string }> {
     if (API_BASE_URL) {
-      return fetchJson<{ orderId: string; approvalUrl: string; status: string }>(`${API_BASE_URL}/paypal/create-order`, {
+      return fetchJson<{ orderId: string; approvalUrl: string; status: string }>(`${API_BASE_URL}/paypal/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(orderPayload),
+        body: JSON.stringify({ planId: orderPayload.planId }),
       });
     }
-    // Simulation / Sandbox mock readiness response
     return {
       orderId: `PAYPAL-SANDBOX-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
       approvalUrl: `https://www.sandbox.paypal.com/checkoutnow?token=EC-${Date.now()}`,
@@ -568,10 +514,6 @@ export const api = {
     };
   },
 
-  /**
-   * Captures approved PayPal Sandbox Order
-   * Express equivalent: POST /api/paypal/capture-order
-   */
   async capturePayPalOrder(capturePayload: {
     orderId: string;
     planTitle: string;
@@ -581,10 +523,9 @@ export const api = {
     itemSummary: string;
   }): Promise<PaymentRecord> {
     if (API_BASE_URL) {
-      const res = await fetchJson<any>(`${API_BASE_URL}/paypal/capture-order`, {
+      const res = await fetchJson<any>(`${API_BASE_URL}/paypal/orders/${capturePayload.orderId}/capture`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(capturePayload),
       });
       return {
         id: res.id || `pay-${Date.now()}`,
@@ -594,7 +535,7 @@ export const api = {
         amount: Number(res.amount ?? capturePayload.amount),
         currency: capturePayload.currency,
         date: new Date().toISOString().replace("T", " ").substring(0, 16),
-        method: "PayPal Sandbox",
+        method: res.isMock ? "Dev Simulator" : "PayPal Sandbox",
         status: (res.status || "completed").toLowerCase(),
         paypalTransactionId: res.captureId || `CAP-${Date.now()}`,
         invoiceNumber: `INV-SW-${Math.floor(10000 + Math.random() * 90000)}`,
@@ -620,20 +561,9 @@ export const api = {
     const current = getStoredData(STORAGE_KEYS.PAYMENTS, initialPayments);
     const updated = [newRecord, ...current];
     setStoredData(STORAGE_KEYS.PAYMENTS, updated);
-
-    // Also update budget spent
-    const budget = getStoredData(STORAGE_KEYS.BUDGET, initialBudget);
-    const updatedBudget: BudgetConfig = {
-      ...budget,
-      spentThisMonth: budget.spentThisMonth + capturePayload.amount,
-      allocatedPending: Math.max(0, budget.allocatedPending - capturePayload.amount),
-    };
-    setStoredData(STORAGE_KEYS.BUDGET, updatedBudget);
-
     return newRecord;
   },
 
-  // Reset demo data helper
   resetToDefaults(): void {
     if (typeof window === "undefined") return;
     localStorage.setItem(STORAGE_KEYS.INVENTORY, JSON.stringify(initialInventory));
@@ -644,4 +574,3 @@ export const api = {
     localStorage.setItem(STORAGE_KEYS.BUDGET, JSON.stringify(initialBudget));
   },
 };
-

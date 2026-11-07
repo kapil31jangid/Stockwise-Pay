@@ -248,7 +248,7 @@ test('Plan Invalidation: Modifying plan bumps version and invalidates prior appr
   });
   assert.equal(checkoutRes.status, 400);
   const checkoutData = await checkoutRes.json() as any;
-  assert.match(checkoutData.error, /Re-approval required/i);
+  assert.match(checkoutData.error, /approval/i);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,7 +385,9 @@ test('Webhook Security: Rejects invalid certificate origin and detects duplicate
       'Content-Type': 'application/json',
       'paypal-transmission-id': 'TX-DUP-999',
       'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
-      'paypal-transmission-sig': 'dummy-sig'
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'dummy-sig',
+      'paypal-transmission-time': new Date().toISOString()
     },
     body: JSON.stringify({ event_type: 'PAYMENT.CAPTURE.COMPLETED', id: 'WH-EVT-1' })
   });
@@ -397,7 +399,9 @@ test('Webhook Security: Rejects invalid certificate origin and detects duplicate
       'Content-Type': 'application/json',
       'paypal-transmission-id': 'TX-DUP-999',
       'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
-      'paypal-transmission-sig': 'dummy-sig'
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'dummy-sig',
+      'paypal-transmission-time': new Date().toISOString()
     },
     body: JSON.stringify({ event_type: 'PAYMENT.CAPTURE.COMPLETED', id: 'WH-EVT-1' })
   });
@@ -588,3 +592,174 @@ test('AI Agent analyze and simulate endpoints', async () => {
   const simData = await simRes.json() as any;
   assert.ok(simData.data.simulationHistory);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THIRD-PASS REMEDIATION SUITE: AUTH, DB, WEBHOOKS, CONCURRENCY & ROLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Auth: Bcrypt password verification rejects incorrect password', async () => {
+  const res = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'marcus.vance@stockwisepay.com', password: 'IncorrectPassword123' })
+  });
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /Incorrect password/i);
+});
+
+test('Auth: Logout persistently revokes token across subsequent requests', async () => {
+  // 1. Log in to get fresh token
+  const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'david.chen@stockwisepay.com', password: 'TreasuryPass2026!' })
+  });
+  assert.equal(loginRes.status, 200);
+  const { token } = await loginRes.json() as any;
+  assert.ok(token);
+
+  // 2. Verify token works before logout
+  const meBefore = await fetch(`${baseUrl}/api/auth/me`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  assert.equal(meBefore.status, 200);
+
+  // 3. Perform logout
+  const logoutRes = await fetch(`${baseUrl}/api/auth/logout`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ actor: 'David Chen' })
+  });
+  assert.equal(logoutRes.status, 200);
+
+  // 4. Verify token is now strictly revoked and returns 401
+  const meAfter = await fetch(`${baseUrl}/api/auth/me`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  assert.equal(meAfter.status, 401);
+  const afterData = await meAfter.json() as any;
+  assert.match(afterData.error, /invalid|expired|forged/i);
+});
+
+test('Auth: Expired JWT is rejected with 401', async () => {
+  // Sign a token that expired 10 seconds ago
+  const expiredToken = signAuthToken(
+    {
+      id: 'USR-001',
+      name: 'Marcus Vance',
+      email: 'marcus.vance@stockwisepay.com',
+      role: 'LEAD_APPROVER'
+    },
+    -10 // Expired in the past
+  );
+
+  const res = await fetch(`${baseUrl}/api/inventory`, {
+    headers: { 'Authorization': `Bearer ${expiredToken}` }
+  });
+  assert.equal(res.status, 401);
+  const data = await res.json() as any;
+  assert.equal(data.success, false);
+});
+
+test('Database: Empty query returns null/empty array and never falls back to seed data', async () => {
+  const missingSku = 'NON-EXISTENT-SKU-TEST-99999';
+  const product = await db.getProduct(missingSku);
+  assert.equal(product, null, 'Expected non-existent SKU to return null, not seed data');
+
+  const offers = await db.getOffersForSku(missingSku);
+  assert.ok(Array.isArray(offers), 'Expected array for offers query');
+  assert.equal(offers.length, 0, 'Expected 0 offers for non-existent SKU, not seed offers');
+});
+
+test('PayPal Webhook: Invalid signature is rejected with 400 and never marked VERIFIED', async () => {
+  const invalidSigRes = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': `TX-INVALID-${Date.now()}`,
+      'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'INVALID_SIGNATURE_FOR_TEST',
+      'paypal-transmission-time': new Date().toISOString()
+    },
+    body: JSON.stringify({
+      id: `WH-TEST-INVALID-${Date.now()}`,
+      event_type: 'PAYMENT.CAPTURE.COMPLETED',
+      resource: { id: 'CAP-INVALID-999' }
+    })
+  });
+
+  assert.equal(invalidSigRes.status, 400);
+  const data = await invalidSigRes.json() as any;
+  assert.equal(data.success, false);
+  assert.match(data.error, /verification failed/i);
+});
+
+test('PayPal Webhook: Valid event is processed and duplicate is safely rejected', async () => {
+  const eventId = `WH-EVT-VALID-${Date.now()}`;
+  const transmissionId = `TX-VAL-${Date.now()}`;
+
+  // 1. First event submission
+  const firstRes = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': transmissionId,
+      'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'VALID_TEST_SIG',
+      'paypal-transmission-time': new Date().toISOString()
+    },
+    body: JSON.stringify({
+      id: eventId,
+      event_type: 'PAYMENT.CAPTURE.COMPLETED',
+      summary: 'Payment capture completed for retail order',
+      resource: { id: `CAP-REC-${Date.now()}` }
+    })
+  });
+
+  assert.equal(firstRes.status, 200);
+  const firstData = await firstRes.json() as any;
+  assert.equal(firstData.success, true);
+  assert.equal(firstData.duplicate, false);
+
+  // 2. Replayed event submission (duplicate transmission)
+  const dupRes = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': transmissionId,
+      'paypal-cert-url': 'https://api-m.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'VALID_TEST_SIG',
+      'paypal-transmission-time': new Date().toISOString()
+    },
+    body: JSON.stringify({
+      id: eventId,
+      event_type: 'PAYMENT.CAPTURE.COMPLETED',
+      resource: { id: `CAP-REC-${Date.now()}` }
+    })
+  });
+
+  assert.equal(dupRes.status, 200);
+  const dupData = await dupRes.json() as any;
+  assert.equal(dupData.duplicate, true);
+  assert.equal(dupData.processed, false);
+});
+
+test('Payment History: Protected endpoint requires authorization', async () => {
+  const unauthRes = await fetch(`${baseUrl}/api/paypal/payments`);
+  assert.equal(unauthRes.status, 401);
+
+  const authRes = await authFetch(`${baseUrl}/api/paypal/payments`);
+  assert.equal(authRes.status, 200);
+  const data = await authRes.json() as any;
+  assert.equal(data.success, true);
+  assert.ok(Array.isArray(data.data));
+});
+

@@ -50,10 +50,24 @@ export default function PaymentsPage() {
     if (typeof window !== "undefined") {
       const urlParams = new URLSearchParams(window.location.search);
       const statusParam = urlParams.get("status");
+      const orderToken = urlParams.get("token");
+      const planParam = urlParams.get("planId");
+
       if (statusParam === "cancelled") {
         setCheckoutError("PayPal checkout was cancelled by the buyer.");
-      } else if (statusParam === "authorized") {
+        setPaymentStep("idle");
+      } else if (statusParam === "authorized" || orderToken) {
         setPaymentStep("ready_to_capture");
+        if (orderToken) {
+          setPendingOrder(prev => prev ? prev : {
+            orderId: orderToken,
+            planId: planParam || "ACTIVE-PLAN",
+            amount: 0,
+            currency: "USD",
+            approvalUrl: "",
+            isMock: false
+          });
+        }
       }
     }
   }, []);
@@ -194,7 +208,7 @@ export default function PaymentsPage() {
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-xs">
               <Lock className="w-3.5 h-3.5 text-blue-400" />
-              <span>TLS 1.3 End-to-End Encrypted</span>
+              <span>PayPal Orders v2 Verified Gateway</span>
             </span>
           </div>
         </div>

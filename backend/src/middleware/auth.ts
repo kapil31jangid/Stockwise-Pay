@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { db } from '../db/index.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -10,12 +11,12 @@ export interface AuthenticatedUser {
   permissions: string[];
 }
 
-interface JwtHeader {
+export interface JwtHeader {
   alg: 'HS256';
   typ: 'JWT';
 }
 
-interface JwtPayload {
+export interface JwtPayload {
   sub: string;
   name: string;
   email: string;
@@ -48,26 +49,31 @@ function getJwtSecret(): string {
   return secret || 'stockwise-cryptographic-jwt-secret-key-32-chars-minimum-dev-only-2026';
 }
 
-// In-memory token revocation blacklist (tracks revoked token JTIs / signatures)
+// In-memory token revocation cache
 const revokedTokenIds = new Set<string>();
 
 /**
- * Revoke an active JWT token
+ * Revoke an active JWT token persistently in database and in-memory cache
  */
-export function revokeAuthToken(token: string): boolean {
+export async function revokeAuthToken(token: string): Promise<boolean> {
   try {
     const parts = token.split('.');
     if (parts.length === 3) {
       const payload: JwtPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
       if (payload.jti) {
         revokedTokenIds.add(payload.jti);
+        const expDate = payload.exp ? new Date(payload.exp * 1000) : new Date(Date.now() + 86400000);
+        await db.revokeToken(payload.jti, expDate).catch(() => {});
         return true;
       }
     }
-    revokedTokenIds.add(token);
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    revokedTokenIds.add(tokenHash);
+    await db.revokeToken(tokenHash, new Date(Date.now() + 86400000)).catch(() => {});
     return true;
   } catch {
-    revokedTokenIds.add(token);
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    revokedTokenIds.add(tokenHash);
     return true;
   }
 }
@@ -118,7 +124,7 @@ export function signAuthToken(
 /**
  * Verify a cryptographic HMAC-SHA256 JWT
  */
-export function verifyAuthToken(token: string): JwtPayload | null {
+export async function verifyAuthToken(token: string): Promise<JwtPayload | null> {
   if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -152,12 +158,21 @@ export function verifyAuthToken(token: string): JwtPayload | null {
       return null; // Expired
     }
 
-    // Check revocation
+    // Check revocation (memory cache first, then database)
     if (payload.jti && revokedTokenIds.has(payload.jti)) {
-      return null; // Revoked
+      return null; // Revoked in cache
     }
-    if (revokedTokenIds.has(token)) {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    if (revokedTokenIds.has(tokenHash)) {
       return null;
+    }
+
+    if (payload.jti) {
+      const isDbRevoked = await db.isTokenRevoked(payload.jti).catch(() => false);
+      if (isDbRevoked) {
+        revokedTokenIds.add(payload.jti);
+        return null;
+      }
     }
 
     return payload;
@@ -178,7 +193,7 @@ const PUBLIC_PATHS = [
  * Central Authentication Middleware
  * Validates cryptographically signed Bearer tokens on all protected routes.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const path = req.path;
   const originalUrl = req.originalUrl.split('?')[0];
 
@@ -204,7 +219,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     });
   }
 
-  const payload = verifyAuthToken(token);
+  const payload = await verifyAuthToken(token);
   if (!payload) {
     return res.status(401).json({
       success: false,
@@ -263,4 +278,3 @@ export function requirePermission(permission: string) {
     next();
   };
 }
-

@@ -27,6 +27,21 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const STORE_FILE = path.join(DATA_DIR, 'stockwise-store.json');
 
+export interface UserRecord {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: 'LEAD_APPROVER' | 'BUYER' | 'TREASURY' | 'STORE_MANAGER';
+  displayRole: string;
+  department: string;
+  avatarInitials: string;
+  badge: string;
+  permissions: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface DatabaseState {
   products: ProductRecord[];
   suppliers: SupplierRecord[];
@@ -39,7 +54,49 @@ export interface DatabaseState {
   auditLogs: AuditLogRecord[];
   budget: BudgetConfigRecord;
   agentRuns: any[];
+  users: UserRecord[];
+  revokedTokens: { tokenHash: string; expiresAt: string }[];
+  webhookEvents: any[];
 }
+
+export const SEED_USERS: UserRecord[] = [
+  {
+    id: 'USR-001',
+    name: 'Marcus Vance',
+    email: 'marcus.vance@stockwisepay.com',
+    passwordHash: '$2b$10$6eq.Sj2yWsaYxHgNYjxtZucnPMsGmsgeWXM6kD5w5moOYU/oKqnK.',
+    role: 'LEAD_APPROVER',
+    displayRole: 'Inventory Lead / Approver',
+    department: 'Operations & Supply',
+    avatarInitials: 'MV',
+    badge: 'LEAD APPROVER',
+    permissions: ['INVENTORY_VIEW', 'INVENTORY_EDIT', 'PLAN_GENERATE', 'PLAN_APPROVE', 'PAYMENT_EXECUTE']
+  },
+  {
+    id: 'USR-002',
+    name: 'Elena Rostova',
+    email: 'elena.rostova@stockwisepay.com',
+    passwordHash: '$2b$10$A.4//Ploce25Alhbt1aGE.fjpsVOXtWAiiE.U0tsiC/WdzbCJB6Y2',
+    role: 'BUYER',
+    displayRole: 'Procurement Specialist',
+    department: 'Supplier Relations',
+    avatarInitials: 'ER',
+    badge: 'BUYER',
+    permissions: ['INVENTORY_VIEW', 'SUPPLIERS_COMPARE', 'PLAN_GENERATE']
+  },
+  {
+    id: 'USR-003',
+    name: 'David Chen',
+    email: 'david.chen@stockwisepay.com',
+    passwordHash: '$2b$10$q6sAjkDwmI7ttOEkwJimqOXnJ0q.wUbgBLecgACZ41CJgeo32kX7m',
+    role: 'TREASURY',
+    displayRole: 'Chief Financial Officer',
+    department: 'Finance & Treasury',
+    avatarInitials: 'DC',
+    badge: 'TREASURY',
+    permissions: ['BUDGET_EDIT', 'AUDIT_VIEW', 'PAYMENT_AUDIT', 'PLAN_APPROVE', 'PAYMENT_EXECUTE']
+  }
+];
 
 class DatabaseStore {
   private state: DatabaseState;
@@ -111,7 +168,11 @@ class DatabaseStore {
     if (fs.existsSync(STORE_FILE)) {
       try {
         const raw = fs.readFileSync(STORE_FILE, 'utf-8');
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (!parsed.users) parsed.users = [...SEED_USERS];
+        if (!parsed.revokedTokens) parsed.revokedTokens = [];
+        if (!parsed.webhookEvents) parsed.webhookEvents = [];
+        return parsed;
       } catch (err) {
         console.warn('⚠️ Could not parse existing store file, initializing fresh store with seeds.');
       }
@@ -126,7 +187,7 @@ class DatabaseStore {
           id: 'PLAN-2026-001',
           name: 'Q4 Urgent High-Stockout Restock',
           purchasingBudget: 2000.00,
-          calculatedTotal: 1850.00,
+          calculatedTotal: 1816.00,
           currentVersion: 1,
           planStatus: 'pending_approval',
           selectedItems: [
@@ -221,7 +282,10 @@ class DatabaseStore {
         }
       ],
       budget: { ...INITIAL_BUDGET },
-      agentRuns: []
+      agentRuns: [],
+      users: [...SEED_USERS],
+      revokedTokens: [],
+      webhookEvents: []
     };
 
     this.persist(defaultState);
@@ -238,6 +302,197 @@ class DatabaseStore {
 
   private save(): void {
     this.persist(this.state);
+  }
+
+  // --- USERS ---
+  async getUserByEmail(email: string): Promise<UserRecord | null> {
+    const cleanEmail = email.trim().toLowerCase();
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(`
+          SELECT 
+            id, name, email, 
+            password_hash AS "passwordHash", 
+            role, 
+            display_role AS "displayRole", 
+            department, 
+            avatar_initials AS "avatarInitials", 
+            badge, 
+            permissions, 
+            created_at AS "createdAt", 
+            updated_at AS "updatedAt"
+          FROM users
+          WHERE LOWER(email) = $1
+          LIMIT 1;
+        `, [cleanEmail]);
+        return res.rows[0] || null;
+      } catch (err) {
+        this.handlePgError('getUserByEmail', err);
+        throw err;
+      }
+    }
+    const found = this.state.users.find(u => u.email.toLowerCase() === cleanEmail);
+    return found ? { ...found } : null;
+  }
+
+  async getUserById(id: string): Promise<UserRecord | null> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(`
+          SELECT 
+            id, name, email, 
+            password_hash AS "passwordHash", 
+            role, 
+            display_role AS "displayRole", 
+            department, 
+            avatar_initials AS "avatarInitials", 
+            badge, 
+            permissions, 
+            created_at AS "createdAt", 
+            updated_at AS "updatedAt"
+          FROM users
+          WHERE id = $1
+          LIMIT 1;
+        `, [id]);
+        return res.rows[0] || null;
+      } catch (err) {
+        this.handlePgError('getUserById', err);
+        throw err;
+      }
+    }
+    const found = this.state.users.find(u => u.id === id);
+    return found ? { ...found } : null;
+  }
+
+  async saveUser(user: UserRecord): Promise<UserRecord> {
+    const updated = { ...user, updatedAt: new Date().toISOString() };
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(`
+          INSERT INTO users (id, name, email, password_hash, role, display_role, department, avatar_initials, badge, permissions, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            email = EXCLUDED.email,
+            password_hash = EXCLUDED.password_hash,
+            role = EXCLUDED.role,
+            display_role = EXCLUDED.display_role,
+            department = EXCLUDED.department,
+            avatar_initials = EXCLUDED.avatar_initials,
+            badge = EXCLUDED.badge,
+            permissions = EXCLUDED.permissions,
+            updated_at = EXCLUDED.updated_at;
+        `, [
+          updated.id, updated.name, updated.email, updated.passwordHash,
+          updated.role, updated.displayRole, updated.department,
+          updated.avatarInitials, updated.badge,
+          JSON.stringify(updated.permissions || []),
+          updated.updatedAt
+        ]);
+        return updated;
+      } catch (err) {
+        this.handlePgError('saveUser', err);
+        throw err;
+      }
+    }
+    const idx = this.state.users.findIndex(u => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase());
+    if (idx >= 0) {
+      this.state.users[idx] = updated;
+    } else {
+      this.state.users.push(updated);
+    }
+    this.save();
+    return updated;
+  }
+
+  // --- TOKEN REVOCATION ---
+  async revokeToken(tokenHash: string, expiresAt: Date): Promise<void> {
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(`
+          INSERT INTO revoked_tokens (token_hash, expires_at, created_at)
+          VALUES ($1, $2, CURRENT_TIMESTAMP)
+          ON CONFLICT (token_hash) DO NOTHING;
+        `, [tokenHash, expiresAt.toISOString()]);
+        return;
+      } catch (err) {
+        this.handlePgError('revokeToken', err);
+        throw err;
+      }
+    }
+    this.state.revokedTokens.push({ tokenHash, expiresAt: expiresAt.toISOString() });
+    this.save();
+  }
+
+  async isTokenRevoked(tokenHash: string): Promise<boolean> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(`
+          SELECT token_hash FROM revoked_tokens 
+          WHERE token_hash = $1 AND expires_at > CURRENT_TIMESTAMP LIMIT 1;
+        `, [tokenHash]);
+        return res.rows.length > 0;
+      } catch (err) {
+        this.handlePgError('isTokenRevoked', err);
+        throw err;
+      }
+    }
+    const now = new Date().toISOString();
+    return this.state.revokedTokens.some(r => r.tokenHash === tokenHash && r.expiresAt > now);
+  }
+
+  // --- WEBHOOK EVENTS ---
+  async saveWebhookEvent(event: {
+    id: string;
+    eventType: string;
+    summary?: string;
+    resourceType?: string;
+    status?: string;
+    rawPayload: any;
+  }): Promise<{ saved: boolean; duplicate: boolean }> {
+    if (this.pgPool) {
+      try {
+        const check = await this.pgPool.query('SELECT id FROM webhook_events WHERE id = $1 LIMIT 1;', [event.id]);
+        if (check.rows.length > 0) {
+          return { saved: false, duplicate: true };
+        }
+        await this.pgPool.query(`
+          INSERT INTO webhook_events (id, event_type, summary, resource_type, status, raw_payload, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+          ON CONFLICT (id) DO NOTHING;
+        `, [
+          event.id,
+          event.eventType,
+          event.summary || null,
+          event.resourceType || null,
+          event.status || 'VERIFIED',
+          JSON.stringify(event.rawPayload || {})
+        ]);
+        return { saved: true, duplicate: false };
+      } catch (err) {
+        this.handlePgError('saveWebhookEvent', err);
+        throw err;
+      }
+    }
+    if (this.state.webhookEvents.some(e => e.id === event.id)) {
+      return { saved: false, duplicate: true };
+    }
+    this.state.webhookEvents.push(event);
+    this.save();
+    return { saved: true, duplicate: false };
+  }
+
+  async isWebhookProcessed(eventId: string): Promise<boolean> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query('SELECT id FROM webhook_events WHERE id = $1 LIMIT 1;', [eventId]);
+        return res.rows.length > 0;
+      } catch (err) {
+        this.handlePgError('isWebhookProcessed', err);
+        throw err;
+      }
+    }
+    return this.state.webhookEvents.some(e => e.id === eventId);
   }
 
   // --- PRODUCTS ---
@@ -257,9 +512,10 @@ class DatabaseStore {
           FROM products
           ORDER BY sku ASC;
         `);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
         this.handlePgError('getProducts', err);
+        throw err;
       }
     }
     return [...this.state.products];
@@ -282,9 +538,10 @@ class DatabaseStore {
           WHERE UPPER(sku) = UPPER($1)
           LIMIT 1;
         `, [sku]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
         this.handlePgError('getProduct', err);
+        throw err;
       }
     }
     const found = this.state.products.find(p => p.sku.toUpperCase() === sku.toUpperCase());
@@ -316,8 +573,10 @@ class DatabaseStore {
           updated.preferredVendorId || null,
           updated.updatedAt
         ]);
+        return updated;
       } catch (err) {
         this.handlePgError('saveProduct', err);
+        throw err;
       }
     }
     const index = this.state.products.findIndex(p => p.sku.toUpperCase() === product.sku.toUpperCase());
@@ -341,9 +600,10 @@ class DatabaseStore {
     if (this.pgPool) {
       try {
         const res = await this.pgPool.query('DELETE FROM products WHERE UPPER(sku) = UPPER($1)', [sku]);
-        if ((res.rowCount ?? 0) > 0) return true;
+        return (res.rowCount ?? 0) > 0;
       } catch (err) {
-        console.warn('PostgreSQL deleteProduct error:', err);
+        this.handlePgError('deleteProduct', err);
+        throw err;
       }
     }
     const prevLen = this.state.products.length;
@@ -373,9 +633,10 @@ class DatabaseStore {
           FROM suppliers
           ORDER BY id ASC;
         `);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getSuppliers error, falling back:', err);
+        this.handlePgError('getSuppliers', err);
+        throw err;
       }
     }
     return [...this.state.suppliers];
@@ -398,9 +659,10 @@ class DatabaseStore {
           FROM suppliers
           WHERE id = $1;
         `, [id]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
-        console.warn('PostgreSQL getSupplier error:', err);
+        this.handlePgError('getSupplier', err);
+        throw err;
       }
     }
     const found = this.state.suppliers.find(s => s.id === id);
@@ -423,9 +685,10 @@ class DatabaseStore {
           FROM supplier_offers
           ORDER BY sku ASC, unit_price ASC;
         `);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getSupplierOffers error:', err);
+        this.handlePgError('getSupplierOffers', err);
+        throw err;
       }
     }
     return [...this.state.supplierOffers];
@@ -447,9 +710,10 @@ class DatabaseStore {
           WHERE UPPER(sku) = UPPER($1)
           ORDER BY unit_price ASC;
         `, [sku]);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getOffersForSku error:', err);
+        this.handlePgError('getOffersForSku', err);
+        throw err;
       }
     }
     return this.state.supplierOffers.filter(o => o.sku.toUpperCase() === sku.toUpperCase());
@@ -468,8 +732,10 @@ class DatabaseStore {
             lead_time_days = EXCLUDED.lead_time_days,
             bulk_discount_note = EXCLUDED.bulk_discount_note;
         `, [offer.id, offer.sku, offer.supplierId, offer.unitPrice, offer.shippingCost, offer.moq, offer.leadTimeDays, offer.bulkDiscountNote || null, offer.quoteCurrency]);
+        return offer;
       } catch (err) {
-        console.warn('PostgreSQL saveSupplierOffer error:', err);
+        this.handlePgError('saveSupplierOffer', err);
+        throw err;
       }
     }
     const index = this.state.supplierOffers.findIndex(o => o.id === offer.id);
@@ -501,9 +767,10 @@ class DatabaseStore {
           FROM purchase_plans
           ORDER BY created_at DESC;
         `);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getPurchasePlans error:', err);
+        this.handlePgError('getPurchasePlans', err);
+        throw err;
       }
     }
     return [...this.state.purchasePlans];
@@ -527,9 +794,10 @@ class DatabaseStore {
           FROM purchase_plans
           WHERE id = $1;
         `, [id]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
-        console.warn('PostgreSQL getPurchasePlan error:', err);
+        this.handlePgError('getPurchasePlan', err);
+        throw err;
       }
     }
     const found = this.state.purchasePlans.find(p => p.id === id);
@@ -560,8 +828,10 @@ class DatabaseStore {
           JSON.stringify(updated.deferredItems || []),
           updated.scenarioMode, updated.updatedAt
         ]);
+        return updated;
       } catch (err) {
-        console.warn('PostgreSQL savePurchasePlan error:', err);
+        this.handlePgError('savePurchasePlan', err);
+        throw err;
       }
     }
     const index = this.state.purchasePlans.findIndex(p => p.id === plan.id);
@@ -572,6 +842,25 @@ class DatabaseStore {
     }
     this.save();
     return updated;
+  }
+
+  async deletePurchasePlan(id: string): Promise<boolean> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query('DELETE FROM purchase_plans WHERE id = $1', [id]);
+        return (res.rowCount ?? 0) > 0;
+      } catch (err) {
+        this.handlePgError('deletePurchasePlan', err);
+        throw err;
+      }
+    }
+    const prev = this.state.purchasePlans.length;
+    this.state.purchasePlans = this.state.purchasePlans.filter(p => p.id !== id);
+    if (this.state.purchasePlans.length !== prev) {
+      this.save();
+      return true;
+    }
+    return false;
   }
 
   async savePlanVersion(version: PlanVersionRecord): Promise<PlanVersionRecord> {
@@ -588,8 +877,10 @@ class DatabaseStore {
           version.changeReason || null,
           version.createdAt
         ]);
+        return version;
       } catch (err) {
-        console.warn('PostgreSQL savePlanVersion error:', err);
+        this.handlePgError('savePlanVersion', err);
+        throw err;
       }
     }
     this.state.planVersions.push(version);
@@ -614,9 +905,10 @@ class DatabaseStore {
           WHERE plan_id = $1
           ORDER BY version_number ASC;
         `, [planId]);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getPlanVersions error:', err);
+        this.handlePgError('getPlanVersions', err);
+        throw err;
       }
     }
     return this.state.planVersions.filter(v => v.planId === planId);
@@ -634,8 +926,10 @@ class DatabaseStore {
           approval.approverName, approval.approverRole, approval.status,
           approval.decisionNotes || null, approval.timestamp
         ]);
+        return approval;
       } catch (err) {
-        console.warn('PostgreSQL saveApproval error:', err);
+        this.handlePgError('saveApproval', err);
+        throw err;
       }
     }
     this.state.approvals.push(approval);
@@ -659,9 +953,10 @@ class DatabaseStore {
           ORDER BY timestamp DESC
           LIMIT 1;
         `, [purchasePlanId]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
-        console.warn('PostgreSQL getApproval error:', err);
+        this.handlePgError('getApproval', err);
+        throw err;
       }
     }
     const matches = this.state.approvals
@@ -692,8 +987,10 @@ class DatabaseStore {
           JSON.stringify(updated.rawPaypalResponse || {}),
           updated.createdAt, updated.updatedAt
         ]);
+        return updated;
       } catch (err) {
-        console.warn('PostgreSQL savePayment error:', err);
+        this.handlePgError('savePayment', err);
+        throw err;
       }
     }
     const index = this.state.payments.findIndex(p => p.id === payment.id || p.paypalOrderId === payment.paypalOrderId);
@@ -725,9 +1022,10 @@ class DatabaseStore {
           FROM payments
           WHERE id = $1;
         `, [id]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
-        console.warn('PostgreSQL getPayment error:', err);
+        this.handlePgError('getPayment', err);
+        throw err;
       }
     }
     const found = this.state.payments.find(p => p.id === id);
@@ -753,9 +1051,10 @@ class DatabaseStore {
           FROM payments
           WHERE paypal_order_id = $1;
         `, [orderId]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
-        console.warn('PostgreSQL getPaymentByPaypalOrderId error:', err);
+        this.handlePgError('getPaymentByPaypalOrderId', err);
+        throw err;
       }
     }
     const found = this.state.payments.find(p => p.paypalOrderId === orderId);
@@ -780,9 +1079,10 @@ class DatabaseStore {
           FROM payments
           ORDER BY created_at DESC;
         `);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
         this.handlePgError('getPayments', err);
+        throw err;
       }
     }
     return [...this.state.payments].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -956,8 +1256,10 @@ class DatabaseStore {
           event.verificationResult || 'VERIFIED',
           event.createdAt || new Date().toISOString()
         ]);
+        return event;
       } catch (err) {
-        console.warn('PostgreSQL savePaymentEvent error:', err);
+        this.handlePgError('savePaymentEvent', err);
+        throw err;
       }
     }
     this.state.paymentEvents.push(event);
@@ -982,8 +1284,10 @@ class DatabaseStore {
           fullLog.entityId, fullLog.previousStatus || null, fullLog.newStatus || null,
           JSON.stringify(fullLog.details || {}), fullLog.createdAt
         ]);
+        return fullLog;
       } catch (err) {
-        console.warn('PostgreSQL saveAuditLog error:', err);
+        this.handlePgError('saveAuditLog', err);
+        throw err;
       }
     }
     this.state.auditLogs.unshift(fullLog);
@@ -1006,9 +1310,10 @@ class DatabaseStore {
           ORDER BY created_at DESC
           LIMIT 100;
         `);
-        if (res.rows.length > 0) return res.rows;
+        return res.rows;
       } catch (err) {
-        console.warn('PostgreSQL getAuditLogs error:', err);
+        this.handlePgError('getAuditLogs', err);
+        throw err;
       }
     }
     return [...this.state.auditLogs];
@@ -1029,9 +1334,10 @@ class DatabaseStore {
           WHERE id = 'default'
           LIMIT 1;
         `);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || INITIAL_BUDGET;
       } catch (err) {
-        console.warn('PostgreSQL getBudget error:', err);
+        this.handlePgError('getBudget', err);
+        throw err;
       }
     }
     return { ...this.state.budget };
@@ -1045,17 +1351,20 @@ class DatabaseStore {
     };
     if (this.pgPool) {
       try {
-        await this.pgPool.query(`
+        const res = await this.pgPool.query(`
           UPDATE budget_config
           SET 
             monthly_budget = COALESCE($1, monthly_budget),
             spent_amount = COALESCE($2, spent_amount),
             allocated_amount = COALESCE($3, allocated_amount),
             updated_at = CURRENT_TIMESTAMP
-          WHERE id = 'default';
+          WHERE id = 'default'
+          RETURNING id, monthly_budget::float AS "monthlyBudget", spent_amount::float AS "spentAmount", allocated_amount::float AS "allocatedAmount", updated_at AS "updatedAt";
         `, [patch.monthlyBudget || null, patch.spentAmount || null, patch.allocatedAmount || null]);
+        return res.rows[0] || this.state.budget;
       } catch (err) {
-        console.warn('PostgreSQL updateBudget error:', err);
+        this.handlePgError('updateBudget', err);
+        throw err;
       }
     }
     this.save();
@@ -1075,8 +1384,10 @@ class DatabaseStore {
           run.executionStatus || 'success', run.executionDurationMs || 0,
           run.createdAt || new Date().toISOString()
         ]);
+        return run;
       } catch (err) {
-        console.warn('PostgreSQL saveAgentRun error:', err);
+        this.handlePgError('saveAgentRun', err);
+        throw err;
       }
     }
     this.state.agentRuns.unshift(run);
@@ -1099,9 +1410,10 @@ class DatabaseStore {
           FROM ai_agent_runs
           WHERE id = $1;
         `, [id]);
-        if (res.rows.length > 0) return res.rows[0];
+        return res.rows[0] || null;
       } catch (err) {
-        console.warn('PostgreSQL getAgentRun error:', err);
+        this.handlePgError('getAgentRun', err);
+        throw err;
       }
     }
     const found = this.state.agentRuns.find(r => r.id === id);
@@ -1121,7 +1433,7 @@ class DatabaseStore {
           WHERE id = 'default';
         `);
       } catch (err) {
-        console.warn('PostgreSQL reset budget error:', err);
+        this.handlePgError('reset budget', err);
       }
     }
   }
