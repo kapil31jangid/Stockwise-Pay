@@ -509,6 +509,7 @@ class DatabaseStore {
    *
    * IMPORTANT: After reconciliation returns APPROVED, the caller MUST call this again
    * with forceNewAttempt=true to get a completely fresh attempt ID, not reuse the old one.
+   * The new attempt uses the SAME paypal_order_id (allowed by partial unique index).
    */
   async tryAcquireCaptureLock(
     paypalOrderId: string,
@@ -533,6 +534,33 @@ class DatabaseStore {
           const existing = existingRes.rows[0];
           const now = new Date();
 
+          // If forceNewAttempt is true (after successful reconciliation), mark old attempt as superseded
+          // and create a brand new attempt record. This check MUST come before RECONCILE check.
+          if (forceNewAttempt) {
+            // Mark old attempt as superseded (not failed, just superseded by new attempt)
+            await client.query(
+              `UPDATE capture_attempts
+               SET status = 'SUPERSEDED',
+                   error_message = 'Superseded by new attempt after reconciliation',
+                   completed_at = CURRENT_TIMESTAMP,
+                   lease_expires_at = NULL,
+                   lease_owner = NULL
+               WHERE id = $1;`,
+              [existing.id]
+            );
+
+            // Insert new attempt with fresh lease (same paypal_order_id allowed by partial unique index)
+            const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const leaseExpires = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+            await client.query(
+              `INSERT INTO capture_attempts (id, paypal_order_id, payment_id, status, started_at, lease_expires_at, last_heartbeat_at, lease_owner, paypal_request_id)
+               VALUES ($1, $2, $3, 'CAPTURING', CURRENT_TIMESTAMP, $4, CURRENT_TIMESTAMP, $5, $6);`,
+              [attemptId, paypalOrderId, paymentId, leaseExpires, instanceId, paypalRequestId]
+            );
+            await client.query('COMMIT;');
+            return attemptId;
+          }
+
           if (existing.status === 'COMPLETED') {
             await client.query('ROLLBACK;');
             return null; // Already completed
@@ -556,34 +584,7 @@ class DatabaseStore {
             return `RECONCILE:${existing.id}`;
           }
 
-          // If forceNewAttempt is true (after successful reconciliation), mark old attempt as superseded
-          // and create a brand new attempt record
-          if (forceNewAttempt) {
-            // Mark old attempt as superseded (not failed, just superseded by new attempt)
-            await client.query(
-              `UPDATE capture_attempts
-               SET status = 'SUPERSEDED',
-                   error_message = 'Superseded by new attempt after reconciliation',
-                   completed_at = CURRENT_TIMESTAMP,
-                   lease_expires_at = NULL,
-                   lease_owner = NULL
-               WHERE id = $1;`,
-              [existing.id]
-            );
-
-            // Insert new attempt with fresh lease
-            const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-            const leaseExpires = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
-            await client.query(
-              `INSERT INTO capture_attempts (id, paypal_order_id, payment_id, status, started_at, lease_expires_at, last_heartbeat_at, lease_owner, paypal_request_id)
-               VALUES ($1, $2, $3, 'CAPTURING', CURRENT_TIMESTAMP, $4, CURRENT_TIMESTAMP, $5, $6);`,
-              [attemptId, paypalOrderId, paymentId, leaseExpires, instanceId, paypalRequestId]
-            );
-            await client.query('COMMIT;');
-            return attemptId;
-          }
-
-          // Safe to take over stale attempt - update with new lease (legacy path)
+          // Safe to take over stale attempt - update with new lease (legacy path, no PayPal IDs)
           const newLeaseExpires = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
           await client.query(
             `UPDATE capture_attempts
@@ -614,8 +615,8 @@ class DatabaseStore {
         return attemptId;
       } catch (err: any) {
         await client.query('ROLLBACK;');
-        if (err.code === '23505') { // unique_violation on paypal_order_id
-          // Race condition - another instance inserted between SELECT and INSERT
+        if (err.code === '23505') { // unique_violation on partial unique index
+          // Race condition - another instance inserted an active attempt between SELECT and INSERT
           return null;
         }
         this.handlePgError('tryAcquireCaptureLock', err);
@@ -631,13 +632,8 @@ class DatabaseStore {
     if (existing) {
       const leaseExpiresAt = existing.leaseExpiresAt ? new Date(existing.leaseExpiresAt).getTime() : 0;
       const isLeaseActive = leaseExpiresAt > now;
-      if (existing.status === 'COMPLETED' || (existing.status === 'CAPTURING' && isLeaseActive)) {
-        return null;
-      }
-      if (existing.paypalCaptureId || existing.paypalRequestId) {
-        return `RECONCILE:${existing.id}`;
-      }
-      // If forceNewAttempt, create new record instead of reusing old one
+
+      // If forceNewAttempt, create new record instead of reusing old one (check FIRST)
       if (forceNewAttempt) {
         // Mark old as superseded
         existing.status = 'SUPERSEDED';
@@ -663,6 +659,13 @@ class DatabaseStore {
         });
         this.save();
         return attemptId;
+      }
+
+      if (existing.status === 'COMPLETED' || (existing.status === 'CAPTURING' && isLeaseActive)) {
+        return null;
+      }
+      if (existing.paypalCaptureId || existing.paypalRequestId) {
+        return `RECONCILE:${existing.id}`;
       }
       // Stale - allow takeover with new lease (legacy path)
       existing.status = 'CAPTURING';
@@ -730,6 +733,7 @@ class DatabaseStore {
    * Reconcile a stale capture attempt with live PayPal state before takeover.
    * Performs actual PayPal API call to verify order state.
    * Returns ReconciliationResult with status and capture ID if completed.
+   * If PayPal reports COMPLETED, performs full idempotent financial settlement via settleCaptureTransaction.
    * Never returns a RECONCILE marker - that is handled at the call site.
    * Fail closed when PayPal state is unavailable or ambiguous.
    */
@@ -769,21 +773,37 @@ class DatabaseStore {
 
         const liveOrder = await orderRes.json() as any;
 
-        // If order is COMPLETED, extract capture details
+        // If order is COMPLETED, extract capture details and perform full settlement
         if (liveOrder.status === 'COMPLETED') {
           const completedCapture = liveOrder.purchase_units?.[0]?.payments?.captures?.[0];
           if (completedCapture && completedCapture.status === 'COMPLETED' && completedCapture.id) {
-            // Update local capture_attempts record with the captured ID
-            await this.pgPool.query(
-              `UPDATE capture_attempts
-               SET status = 'COMPLETED',
-                   paypal_capture_id = $1,
-                   completed_at = CURRENT_TIMESTAMP,
-                   lease_expires_at = NULL,
-                   lease_owner = NULL
-               WHERE id = $2;`,
-              [completedCapture.id, existingAttemptId]
+            // Get payment record to extract payment details for settlement
+            const paymentRes = await this.pgPool.query(
+              `SELECT p.id, p.purchase_plan_id, p.plan_version, p.amount, p.currency, p.payer_email, p.raw_paypal_response
+               FROM payments p
+               JOIN capture_attempts ca ON ca.payment_id = p.id
+               WHERE ca.id = $1;`,
+              [existingAttemptId]
             );
+            if (paymentRes.rows.length === 0) {
+              return { status: 'FAILED', error: 'PayPal reconciliation failed: Associated payment record not found' };
+            }
+            const payment = paymentRes.rows[0];
+
+            // Perform full idempotent settlement (payment, budget, plan, audit, attempt)
+            await this.settleCaptureTransaction({
+              attemptId: existingAttemptId,
+              paymentId: payment.id,
+              planId: payment.purchase_plan_id,
+              captureId: completedCapture.id,
+              amount: payment.amount,
+              currency: payment.currency,
+              actor: 'PayPal Reconciliation Engine',
+              payerEmail: payment.payer_email || liveOrder.payer?.email_address || 'buyer@stockwise.test',
+              rawPaypalResponse: liveOrder,
+              instanceId: 'reconciliation-engine' // Special instance ID for reconciliation
+            });
+
             return { status: 'COMPLETED', captureId: completedCapture.id };
           }
           return { status: 'FAILED', error: 'PayPal reconciliation failed: Order COMPLETED but no valid capture found' };
@@ -1668,6 +1688,241 @@ class DatabaseStore {
       details: { orderId: payment.paypalOrderId, captureId, amount },
       createdAt: new Date().toISOString()
     });
+
+    this.save();
+    return { payment: updatedPayment, budget: this.state.budget };
+  }
+
+  /**
+   * Shared Idempotent Settlement Transaction
+   * Used by normal capture, reconciliation, and webhook processing.
+   * Locks capture_attempt row with FOR UPDATE, verifies ownership, and performs
+   * all financial settlement atomically.
+   * Fail closed: rolls back all changes if any validation fails.
+   */
+  public async settleCaptureTransaction(params: {
+    attemptId: string;
+    paymentId: string;
+    planId: string;
+    captureId: string;
+    amount: number;
+    currency: string;
+    actor: string;
+    payerEmail: string;
+    rawPaypalResponse: any;
+    instanceId: string; // For lease ownership verification
+  }): Promise<{ payment: PaymentRecord; budget: BudgetConfigRecord }> {
+    const { attemptId, paymentId, planId, captureId, amount, currency, actor, payerEmail, rawPaypalResponse, instanceId } = params;
+
+    if (this.pgPool) {
+      const client = await this.pgPool.connect();
+      try {
+        await client.query('BEGIN;');
+
+        // 1. Lock and verify payment record FIRST (for idempotency)
+        const payRes = await client.query(
+          `SELECT id, verified_status AS "verifiedStatus", amount::float, currency, paypal_order_id FROM payments WHERE id = $1 FOR UPDATE;`,
+          [paymentId]
+        );
+        if (payRes.rows.length === 0) {
+          throw new Error(`Payment record ${paymentId} not found in database.`);
+        }
+        const payment = payRes.rows[0];
+        if (payment.verifiedStatus === 'COMPLETED') {
+          // Idempotent: payment already settled, verify attempt state and return success
+          const attemptCheck = await client.query(
+            `SELECT status FROM capture_attempts WHERE id = $1;`,
+            [attemptId]
+          );
+          if (attemptCheck.rows.length > 0) {
+            const attemptStatus = attemptCheck.rows[0].status;
+            if (attemptStatus === 'CAPTURING') {
+              // Mark attempt as COMPLETED to keep in sync
+              await client.query(
+                `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
+                [captureId, attemptId]
+              );
+            } else if (attemptStatus !== 'COMPLETED') {
+              // Attempt is in unexpected state (FAILED, SUPERSEDED) but payment is COMPLETED
+              // This is an inconsistent state, but we don't fail - payment is the source of truth
+            }
+          }
+          await client.query('COMMIT;');
+          return { payment: { ...payment, paypalCaptureId: captureId, verifiedStatus: 'COMPLETED' } as PaymentRecord, budget: await this.getBudget() };
+        }
+
+        // 2. Lock and verify capture attempt - FOR UPDATE to prevent concurrent settlement
+        const attemptRes = await client.query(
+          `SELECT id, status, lease_owner FROM capture_attempts WHERE id = $1 FOR UPDATE;`,
+          [attemptId]
+        );
+        if (attemptRes.rows.length === 0) {
+          throw new Error(`Capture attempt ${attemptId} not found.`);
+        }
+        const attempt = attemptRes.rows[0];
+        if (attempt.status !== 'CAPTURING') {
+          throw new Error(`Capture attempt ${attemptId} is not in CAPTURING state (current: ${attempt.status}).`);
+        }
+        if (attempt.lease_owner !== instanceId) {
+          throw new Error(`Lease ownership verification failed for attempt ${attemptId}. Another instance may have taken over.`);
+        }
+
+        // 3. Validate amount and currency match
+        if (Math.abs(payment.amount - amount) > 0.01) {
+          throw new Error(`Settlement failed: Amount mismatch (payment: $${payment.amount}, capture: $${amount}).`);
+        }
+        if (payment.currency !== currency) {
+          throw new Error(`Settlement failed: Currency mismatch (payment: ${payment.currency}, capture: ${currency}).`);
+        }
+
+        // 4. Lock and verify budget record to prevent double-spending
+        const budgetRes = await client.query(
+          `SELECT id, monthly_budget::float AS "monthlyBudget", spent_amount::float AS "spentAmount", allocated_amount::float AS "allocatedAmount" FROM budget_config LIMIT 1 FOR UPDATE;`
+        );
+        const currentBudget = budgetRes.rows[0] || { id: 'default', monthlyBudget: 5000, spentAmount: 0, allocatedAmount: 0 };
+        const budgetId = currentBudget.id || 'default';
+        const newSpent = Number((currentBudget.spentAmount + amount).toFixed(2));
+        if (newSpent > currentBudget.monthlyBudget + 0.01) {
+          throw new Error(`Transaction rejected: Budget ceiling exceeded ($${newSpent.toFixed(2)} / $${currentBudget.monthlyBudget.toFixed(2)}).`);
+        }
+        const newAllocated = Math.max(0, Number((currentBudget.allocatedAmount - amount).toFixed(2)));
+
+        // 5. Update budget
+        await client.query(
+          `UPDATE budget_config SET spent_amount = $1, allocated_amount = $2, updated_at = $3 WHERE id = $4;`,
+          [newSpent, newAllocated, new Date().toISOString(), budgetId]
+        );
+
+        // 6. Verify plan exists and update plan status to 'paid'
+        const planRes = await client.query(
+          `SELECT id FROM purchase_plans WHERE id = $1 FOR UPDATE;`,
+          [planId]
+        );
+        if (planRes.rows.length === 0) {
+          throw new Error(`Purchase plan ${planId} not found in database.`);
+        }
+        await client.query(
+          `UPDATE purchase_plans SET plan_status = 'paid', updated_at = $1 WHERE id = $2;`,
+          [new Date().toISOString(), planId]
+        );
+
+        // 7. Update payment record to COMPLETED
+        const updatedPayment: PaymentRecord = {
+          ...payment,
+          paypalCaptureId: captureId,
+          verifiedStatus: 'COMPLETED',
+          payerEmail,
+          rawPaypalResponse,
+          updatedAt: new Date().toISOString()
+        };
+        await client.query(
+          `UPDATE payments SET paypal_capture_id = $1, verified_status = 'COMPLETED', payer_email = $2, raw_paypal_response = $3, updated_at = $4 WHERE id = $5;`,
+          [captureId, payerEmail, JSON.stringify(rawPaypalResponse || {}), updatedPayment.updatedAt, paymentId]
+        );
+
+        // 8. Insert immutable audit log
+        await client.query(
+          `INSERT INTO audit_logs (id, actor, action, entity_type, entity_id, previous_status, new_status, details, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+          [
+            `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            actor,
+            'CAPTURE_PAYPAL_ORDER',
+            'PAYMENT',
+            captureId,
+            'CREATED',
+            'COMPLETED',
+            JSON.stringify({ orderId: payment.paypal_order_id, captureId, amount }),
+            new Date().toISOString()
+          ]
+        );
+
+        // 9. Mark capture attempt as COMPLETED (lease ownership already verified)
+        await client.query(
+          `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
+          [captureId, attemptId]
+        );
+
+        await client.query('COMMIT;');
+
+        // Sync local memory state
+        const idx = this.state.payments.findIndex(p => p.id === paymentId);
+        if (idx >= 0) this.state.payments[idx] = updatedPayment;
+        const planIdx = this.state.purchasePlans.findIndex(p => p.id === planId);
+        if (planIdx >= 0) this.state.purchasePlans[planIdx].planStatus = 'paid';
+        this.state.budget.spentAmount = newSpent;
+        this.state.budget.allocatedAmount = newAllocated;
+        this.save();
+
+        return { payment: updatedPayment, budget: { ...currentBudget, spentAmount: newSpent, allocatedAmount: newAllocated } };
+      } catch (err: any) {
+        await client.query('ROLLBACK;');
+        this.handlePgError('settleCaptureTransaction', err);
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    // Local in-memory transaction with strict balance enforcement
+    const payIdx = this.state.payments.findIndex(p => p.id === paymentId);
+    if (payIdx < 0) throw new Error(`Payment record ${paymentId} not found.`);
+    const payment = this.state.payments[payIdx];
+    if (payment.verifiedStatus === 'COMPLETED') {
+      // Idempotent
+      return { payment, budget: this.state.budget };
+    }
+
+    if (Math.abs(payment.amount - amount) > 0.01) {
+      throw new Error(`Settlement failed: Amount mismatch (payment: $${payment.amount}, capture: $${amount}).`);
+    }
+    if (payment.currency !== currency) {
+      throw new Error(`Settlement failed: Currency mismatch (payment: ${payment.currency}, capture: ${currency}).`);
+    }
+
+    const currentBudget = this.state.budget;
+    const newSpent = Number((currentBudget.spentAmount + amount).toFixed(2));
+    if (newSpent > currentBudget.monthlyBudget + 0.01) {
+      throw new Error(`Transaction rejected: Budget ceiling exceeded ($${newSpent.toFixed(2)} / $${currentBudget.monthlyBudget.toFixed(2)}).`);
+    }
+
+    const updatedPayment: PaymentRecord = {
+      ...payment,
+      paypalCaptureId: captureId,
+      verifiedStatus: 'COMPLETED',
+      payerEmail,
+      rawPaypalResponse,
+      updatedAt: new Date().toISOString()
+    };
+    this.state.payments[payIdx] = updatedPayment;
+
+    const plan = this.state.purchasePlans.find(p => p.id === planId);
+    if (plan) plan.planStatus = 'paid';
+
+    this.state.budget.spentAmount = newSpent;
+    this.state.budget.allocatedAmount = Math.max(0, Number((currentBudget.allocatedAmount - amount).toFixed(2)));
+
+    this.state.auditLogs.unshift({
+      id: `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      actor,
+      action: 'CAPTURE_PAYPAL_ORDER',
+      entityType: 'PAYMENT',
+      entityId: captureId,
+      previousStatus: 'CREATED',
+      newStatus: 'COMPLETED',
+      details: { orderId: payment.paypalOrderId, captureId, amount },
+      createdAt: new Date().toISOString()
+    });
+
+    // Update local capture attempt
+    const attemptIdx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
+    if (attemptIdx !== undefined && attemptIdx >= 0) {
+      this.state.captureAttempts[attemptIdx].status = 'COMPLETED';
+      this.state.captureAttempts[attemptIdx].paypalCaptureId = captureId;
+      this.state.captureAttempts[attemptIdx].completedAt = new Date().toISOString();
+      this.state.captureAttempts[attemptIdx].leaseExpiresAt = null;
+      this.state.captureAttempts[attemptIdx].leaseOwner = null;
+    }
 
     this.save();
     return { payment: updatedPayment, budget: this.state.budget };

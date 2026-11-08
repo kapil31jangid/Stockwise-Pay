@@ -76,22 +76,28 @@ class PayPalService {
 
   /**
    * Start a heartbeat interval for a capture attempt.
-   * Returns a cleanup function to stop the heartbeat.
-   * Heartbeat failures are logged but do not throw - the next renewal will fail and trigger lease loss.
+   * Returns a cleanup function to stop the heartbeat and a function to check if lease was lost.
+   * Heartbeat renewal failure is treated as lease loss - the capture operation should abort.
    */
-  private startCaptureHeartbeat(attemptId: string): () => void {
+  private startCaptureHeartbeat(attemptId: string): { stop: () => void; isLeaseLost: () => boolean } {
+    let leaseLost = false;
     const interval = setInterval(async () => {
       try {
         const renewed = await this.renewCaptureLease(attemptId);
         if (!renewed) {
-          console.warn(`[PayPal] Heartbeat renewal failed for attempt ${attemptId} - lease likely lost`);
+          leaseLost = true;
+          console.warn(`[PayPal] Heartbeat renewal failed for attempt ${attemptId} - LEASE LOST, capture should abort`);
         }
       } catch (err) {
-        console.warn(`[PayPal] Heartbeat error for attempt ${attemptId}:`, err);
+        leaseLost = true;
+        console.warn(`[PayPal] Heartbeat error for attempt ${attemptId} - LEASE LOST:`, err);
       }
     }, 2 * 60 * 1000); // Renew every 2 minutes (lease is 5 minutes)
 
-    return () => clearInterval(interval);
+    return {
+      stop: () => clearInterval(interval),
+      isLeaseLost: () => leaseLost
+    };
   }
 
   /**
@@ -467,6 +473,8 @@ class PayPalService {
   /**
    * Execute real PayPal Sandbox capture with full validation
    * CRITICAL: Heartbeat starts BEFORE order status verification to prevent lease loss during verification
+   * Settlement is now atomic with lease ownership verification via settleCaptureTransaction
+   * Heartbeat loss aborts the capture operation
    */
   private async executeRealCapture(
     orderId: string,
@@ -479,7 +487,7 @@ class PayPalService {
     // Start heartbeat FIRST - before any PayPal API calls
     // This prevents lease expiry during the entire critical section:
     // order verification -> amount validation -> capture API -> DB transaction
-    const stopHeartbeat = this.startCaptureHeartbeat(attemptId);
+    const heartbeat = this.startCaptureHeartbeat(attemptId);
 
     let res: Response;
     try {
@@ -492,6 +500,11 @@ class PayPalService {
           'Content-Type': 'application/json'
         }
       });
+
+      // Check for lease loss after network call
+      if (heartbeat.isLeaseLost()) {
+        throw new Error(`Lease lost during order verification - another instance may have taken over`);
+      }
 
       if (!orderStatusRes.ok) {
         const errText = await orderStatusRes.text();
@@ -526,6 +539,11 @@ class PayPalService {
         }
       }
 
+      // Check for lease loss before capture API call
+      if (heartbeat.isLeaseLost()) {
+        throw new Error(`Lease lost before capture - another instance may have taken over`);
+      }
+
       // Step D: Execute server capture with idempotency header
       // Heartbeat continues throughout the capture API call
       res = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
@@ -537,6 +555,11 @@ class PayPalService {
         }
       });
 
+      // Check for lease loss after capture API call
+      if (heartbeat.isLeaseLost()) {
+        throw new Error(`Lease lost during capture API call - another instance may have taken over`);
+      }
+
       if (!res.ok) {
         const errorText = await res.text();
         if (errorText.includes('ORDER_ALREADY_CAPTURED')) {
@@ -547,24 +570,26 @@ class PayPalService {
           if (process.env.NODE_ENV === 'test') {
             console.warn(`[PayPal Sandbox] Order ${orderId} automated test/demo fulfillment in test mode.`);
             const simCaptureId = `CAP-SANDBOX-${Date.now()}`;
-            const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-              payment: existingPayment,
+            await db.settleCaptureTransaction({
+              attemptId,
+              paymentId: existingPayment.id,
               planId: existingPayment.purchasePlanId,
-              amount: existingPayment.amount,
-              actor,
               captureId: simCaptureId,
+              amount: existingPayment.amount,
+              currency: existingPayment.currency,
+              actor,
+              payerEmail: 'buyer-retail@stockwise.test',
               rawPaypalResponse: { note: 'Completed via sandbox test flow', raw: errorText },
-              payerEmail: 'buyer-retail@stockwise.test'
+              instanceId: this.instanceId
             });
-            await this.completeCaptureAttempt(attemptId, simCaptureId);
             return {
               captureId: simCaptureId,
               orderId,
               status: 'COMPLETED',
-              amount: completedPayment.amount,
-              currency: completedPayment.currency,
-              payerEmail: completedPayment.payerEmail || 'buyer-retail@stockwise.test',
-              transactionTime: completedPayment.updatedAt,
+              amount: existingPayment.amount,
+              currency: existingPayment.currency,
+              payerEmail: 'buyer-retail@stockwise.test',
+              transactionTime: new Date().toISOString(),
               isMock: true
             };
           } else {
@@ -583,38 +608,49 @@ class PayPalService {
       const captureId = capture.id;
       const payerEmail = captureData.payer?.email_address || 'buyer-retail@stockwise.test';
 
-      const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-        payment: existingPayment,
+      // ATOMIC: Settlement with lease ownership verification in single transaction
+      await db.settleCaptureTransaction({
+        attemptId,
+        paymentId: existingPayment.id,
         planId: existingPayment.purchasePlanId,
-        amount: existingPayment.amount,
-        actor,
         captureId,
+        amount: existingPayment.amount,
+        currency: existingPayment.currency,
+        actor,
+        payerEmail,
         rawPaypalResponse: captureData,
-        payerEmail
+        instanceId: this.instanceId
       });
 
-      await this.completeCaptureAttempt(attemptId, captureId);
       return {
         captureId,
         orderId,
         status: 'COMPLETED',
-        amount: completedPayment.amount,
-        currency: completedPayment.currency,
+        amount: existingPayment.amount,
+        currency: existingPayment.currency,
         payerEmail,
-        transactionTime: completedPayment.updatedAt,
+        transactionTime: new Date().toISOString(),
         isMock: false
       };
     } catch (captureError: any) {
+      // Mark attempt as failed if we still own the lease (settleCaptureTransaction already does this atomically)
+      // But we try to mark as FAILED if settlement didn't run
+      try {
+        await db.completeCaptureAttempt(attemptId, '', captureError.message, this.instanceId);
+      } catch (markError: any) {
+        // If we can't mark it failed (lost lease), that's fine - another instance will handle it
+        console.warn(`[PayPal] Could not mark attempt as failed: ${markError.message}`);
+      }
       throw captureError;
     } finally {
       // CRITICAL: Always stop heartbeat on every path (success, error, throw)
-      stopHeartbeat();
+      heartbeat.stop();
     }
   }
 
   /**
    * Reconcile a PayPal order that was already captured (COMPLETED status)
-   * Keeps heartbeat alive during DB transaction.
+   * Uses atomic settlement with lease ownership verification.
    */
   private async reconcileCompletedOrder(
     liveOrder: any,
@@ -632,38 +668,36 @@ class PayPalService {
     this.validateCaptureResponse(completedCapture, liveOrder, existingPayment);
 
     const payerEmail = liveOrder.payer?.email_address || 'buyer@stockwise.test';
-    // Heartbeat already running from executeRealCapture
-    try {
-      const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-        payment: existingPayment,
-        planId: existingPayment.purchasePlanId,
-        amount: existingPayment.amount,
-        actor,
-        captureId: completedCapture.id,
-        rawPaypalResponse: liveOrder,
-        payerEmail
-      });
 
-      await this.completeCaptureAttempt(attemptId, completedCapture.id);
+    // ATOMIC: Settlement with lease ownership verification in single transaction
+    await db.settleCaptureTransaction({
+      attemptId,
+      paymentId: existingPayment.id,
+      planId: existingPayment.purchasePlanId,
+      captureId: completedCapture.id,
+      amount: existingPayment.amount,
+      currency: existingPayment.currency,
+      actor,
+      payerEmail,
+      rawPaypalResponse: liveOrder,
+      instanceId: this.instanceId
+    });
 
-      return {
-        captureId: completedCapture.id,
-        orderId: existingPayment.paypalOrderId,
-        status: 'COMPLETED',
-        amount: completedPayment.amount,
-        currency: completedPayment.currency,
-        payerEmail,
-        transactionTime: completedPayment.updatedAt,
-        isMock: false
-      };
-    } catch (err) {
-      throw err;
-    }
+    return {
+      captureId: completedCapture.id,
+      orderId: existingPayment.paypalOrderId,
+      status: 'COMPLETED',
+      amount: existingPayment.amount,
+      currency: existingPayment.currency,
+      payerEmail,
+      transactionTime: new Date().toISOString(),
+      isMock: false
+    };
   }
 
   /**
    * Reconcile an already captured order (ORDER_ALREADY_CAPTURED error)
-   * Keeps heartbeat alive during refetch and DB transaction.
+   * Uses atomic settlement with lease ownership verification.
    */
   private async reconcileAlreadyCaptured(
     orderId: string,
@@ -673,7 +707,6 @@ class PayPalService {
     attemptId: string,
     token: string
   ): Promise<CaptureOrderResult> {
-    // Heartbeat already running from executeRealCapture
     try {
       const refetchRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`, {
         method: 'GET',
@@ -688,26 +721,28 @@ class PayPalService {
 
       this.validateCaptureResponse(cap, reconciledOrder, existingPayment);
 
-      const { payment: completedPayment } = await db.executePaymentCaptureTransaction({
-        payment: existingPayment,
+      // ATOMIC: Settlement with lease ownership verification in single transaction
+      await db.settleCaptureTransaction({
+        attemptId,
+        paymentId: existingPayment.id,
         planId: existingPayment.purchasePlanId,
-        amount: existingPayment.amount,
-        actor,
         captureId: cap.id,
+        amount: existingPayment.amount,
+        currency: existingPayment.currency,
+        actor,
+        payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test',
         rawPaypalResponse: reconciledOrder,
-        payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test'
+        instanceId: this.instanceId
       });
-
-      await this.completeCaptureAttempt(attemptId, cap.id);
 
       return {
         captureId: cap.id,
         orderId,
         status: 'COMPLETED',
-        amount: completedPayment.amount,
-        currency: completedPayment.currency,
-        payerEmail: completedPayment.payerEmail || 'buyer@stockwise.test',
-        transactionTime: completedPayment.updatedAt,
+        amount: existingPayment.amount,
+        currency: existingPayment.currency,
+        payerEmail: reconciledOrder.payer?.email_address || 'buyer@stockwise.test',
+        transactionTime: new Date().toISOString(),
         isMock: false
       };
     } catch (err) {

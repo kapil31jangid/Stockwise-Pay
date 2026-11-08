@@ -197,13 +197,14 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 );
 
 -- 16. CAPTURE ATTEMPTS TABLE (distributed locking with lease/heartbeat)
--- Ensures exactly one capture per PayPal order across multiple backend instances
+-- Ensures exactly one ACTIVE capture per PayPal order across multiple backend instances
 -- Includes lease/heartbeat mechanism to prevent premature takeover of long-running captures
+-- Multiple attempts can exist for the same order (SUPERSEDED, FAILED), but only one can be CAPTURING or COMPLETED
 CREATE TABLE IF NOT EXISTS capture_attempts (
   id VARCHAR(50) PRIMARY KEY,
-  paypal_order_id VARCHAR(100) NOT NULL UNIQUE,
+  paypal_order_id VARCHAR(100) NOT NULL,
   payment_id VARCHAR(50) NOT NULL REFERENCES payments(id),
-  status VARCHAR(50) NOT NULL DEFAULT 'CAPTURING', -- CAPTURING, COMPLETED, FAILED
+  status VARCHAR(50) NOT NULL DEFAULT 'CAPTURING', -- CAPTURING, COMPLETED, FAILED, SUPERSEDED
   paypal_capture_id VARCHAR(100),
   error_message TEXT,
   started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -219,6 +220,10 @@ CREATE TABLE IF NOT EXISTS capture_attempts (
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_payment_id ON capture_attempts(payment_id);
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_status_started ON capture_attempts(status, started_at);
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
+-- Partial unique index: only ONE active (CAPTURING or COMPLETED) attempt per PayPal order
+CREATE UNIQUE INDEX IF NOT EXISTS uq_capture_attempts_active_order
+  ON capture_attempts(paypal_order_id)
+  WHERE status IN ('CAPTURING', 'COMPLETED');
 
 -- ==============================================================================
 -- UPGRADE MIGRATIONS (idempotent - safe to run multiple times)
@@ -252,6 +257,25 @@ ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS paypal_request_id VARCHAR(
 
 -- Add lease index if not exists
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
+
+-- Drop old full unique constraint on paypal_order_id if it exists (legacy schema)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE table_name = 'capture_attempts'
+    AND constraint_name = 'capture_attempts_paypal_order_id_key'
+    AND constraint_type = 'UNIQUE'
+  ) THEN
+    ALTER TABLE capture_attempts DROP CONSTRAINT capture_attempts_paypal_order_id_key;
+  END IF;
+END $$;
+
+-- Add partial unique index for active attempts (CAPTURING, COMPLETED) per PayPal order
+-- This replaces the old UNIQUE constraint on paypal_order_id
+CREATE UNIQUE INDEX IF NOT EXISTS uq_capture_attempts_active_order
+  ON capture_attempts(paypal_order_id)
+  WHERE status IN ('CAPTURING', 'COMPLETED');
 
 -- Add transmission_id to existing webhook_events if missing (legacy databases may not have it)
 ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS transmission_id VARCHAR(100);

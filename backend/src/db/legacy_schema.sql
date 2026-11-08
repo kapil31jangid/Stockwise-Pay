@@ -212,7 +212,7 @@ CREATE TABLE webhook_events (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 16. CAPTURE ATTEMPTS TABLE (LEGACY: NO lease/heartbeat columns)
+-- 16. CAPTURE ATTEMPTS TABLE (LEGACY: UNIQUE constraint on paypal_order_id, NO lease/heartbeat columns)
 CREATE TABLE capture_attempts (
   id VARCHAR(100) PRIMARY KEY,
   paypal_order_id VARCHAR(100) NOT NULL UNIQUE,

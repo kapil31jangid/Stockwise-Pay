@@ -256,6 +256,25 @@ ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS paypal_request_id VARCHAR(
 -- Add lease index if not exists
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
 
+-- Drop old full unique constraint on paypal_order_id if it exists (legacy schema)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE table_name = 'capture_attempts'
+    AND constraint_name = 'capture_attempts_paypal_order_id_key'
+    AND constraint_type = 'UNIQUE'
+  ) THEN
+    ALTER TABLE capture_attempts DROP CONSTRAINT capture_attempts_paypal_order_id_key;
+  END IF;
+END $$;
+
+-- Add partial unique index for active attempts (CAPTURING, COMPLETED) per PayPal order
+-- This replaces the old UNIQUE constraint on paypal_order_id
+CREATE UNIQUE INDEX IF NOT EXISTS uq_capture_attempts_active_order
+  ON capture_attempts(paypal_order_id)
+  WHERE status IN ('CAPTURING', 'COMPLETED');
+
 -- ==============================================================================
 -- INITIAL SEED DATA
 -- ==============================================================================
