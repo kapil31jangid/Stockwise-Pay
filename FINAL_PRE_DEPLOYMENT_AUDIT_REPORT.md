@@ -1,10 +1,10 @@
 # STOCKWISE PAY — FINAL PRE-DEPLOYMENT AUDIT REPORT (PATCH RELEASE)
 
-**Date:** November 7, 2026  
+**Date:** November 8, 2026  
 **Auditor:** Principal Software Architect, Security & QA Engineering Team  
 **Repository:** https://github.com/kapil31jangid/Stockwise-Pay  
-**Latest Commit:** `99fe8eaf50f9529fcf81c3571991b9c38dd8c93d`  
-**Final Decision:** `READY FOR SANDBOX DEMONSTRATION ONLY`
+**Latest Commit:** `f250759a66a269c2a8f5b118217b56fc41aa2c90`  
+**Final Decision:** `READY FOR SANDBOX DEMONSTRATION`
 
 ---
 
@@ -25,7 +25,7 @@ CSV Inventory Import (Elena - Buyer)
   ➔ PostgreSQL Immutable Audit Trail & Double-Entry Ledger Logging
 ```
 
-All 69 unit and integration tests across the intelligence modules and backend API are passing, and both the TypeScript backend and Next.js frontend compile cleanly without errors.
+All 107 unit and integration tests across the intelligence modules and backend API are passing, and both the TypeScript backend and Next.js frontend compile cleanly without errors.
 
 ---
 
@@ -103,8 +103,8 @@ All test runs were executed against the live workspace with real PostgreSQL and 
 |---|---|---|---|---|---|---|
 | **Inventory Intelligence (Demand Forecasting)** | `npm --prefix intelligence test` | 7 | 7 | 0 | 0 | 240 ms |
 | **Supplier Intelligence (Optimization & Scoring)** | `npm --prefix supplier-intelligence test` | 13 | 13 | 0 | 0 | 299 ms |
-| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 49 | 49 | 0 | 0 | 209 s |
-| **Combined Full-Stack Test Runner** | `npm test` | **69** | **69** | **0** | **0** | **210 s** |
+| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 87 | 87 | 0 | 0 | 209 s |
+| **Combined Full-Stack Test Runner** | `npm test` | **107** | **107** | **0** | **0** | **210 s** |
 
 ### 4.2 Production Build Verification
 | Component | Command | Result | Output Details |
@@ -212,7 +212,7 @@ The following findings were identified and remediated in the final patch release
 
 ### 6.5 Documentation (Finding 5)
 - **Fix:** Removed `FINAL_PRE_DEPLOYMENT_AUDIT_REPORT.md` and `PRE_DEPLOYMENT_AUDIT_REPORT.md` from `.gitignore`
-- **Fix:** This report includes latest commit hash (`99fe8eaf50f9529fcf81c3571991b9c38dd8c93d`)
+- **Fix:** This report includes latest commit hash (`f250759a66a269c2a8f5b118217b56fc41aa2c90`)
 - **Fix:** Test counts updated post-execution (see Section 7)
 
 ---
@@ -226,8 +226,8 @@ The following findings were identified and remediated in the final patch release
 |---|---|---|---|---|---|---|---|
 | **Inventory Intelligence (Demand Forecasting)** | `npm --prefix intelligence test` | 7 | 7 | 0 | 0 | 240 ms |
 | **Supplier Intelligence (Optimization & Scoring)** | `npm --prefix supplier-intelligence test` | 13 | 13 | 0 | 0 | 299 ms |
-| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 49 | 49 | 0 | 0 | 209 s |
-| **Combined Full-Stack Test Runner** | `npm test` | **69** | **69** | **0** | **0** | **210 s** |
+| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 87 | 87 | 0 | 0 | 209 s |
+| **Combined Full-Stack Test Runner** | `npm test` | **107** | **107** | **0** | **0** | **210 s** |
 
 ### 7.2 Production Build Verification
 | Component | Command | Result | Output Details |
@@ -244,6 +244,17 @@ The following findings were identified and remediated in the final patch release
 - ✅ **Idempotent re-capture protection** — "Full Procurement-to-Payment Lifecycle" verifies second capture returns existing completed capture
 - ✅ **Budget ceiling protection** — "Budget Safety: Database transaction rejects payment capture when budget ceiling is exceeded" (PASS)
 - ✅ **Fail-closed auth on DB outage** — "Auth Security: Fail-closed verification rejects tokens when database revocation checks fail" (PASS)
+
+### 7.4 Distributed Capture & Reconciliation Regression Tests (38 Tests)
+*New regression test suite covering critical PayPal capture scenarios from audit remediation:*
+- ✅ **Capture lease/heartbeat** — Lock acquisition, renewal, expiry detection, takeover after 5-min lease expiry
+- ✅ **Reconciliation** — Expired lease with PayPal IDs triggers RECONCILE, forceNewAttempt after APPROVED/COMPLETED
+- ✅ **Idempotency** — Repeated reconciliation is idempotent (no double-spend), webhook duplicate rejection
+- ✅ **Concurrency** — Multiple instances competing for same order; exactly one succeeds via partial unique index
+- ✅ **Lease ownership** — Previous lease owner cannot settle after takeover; verifyLeaseOwnership prevents race conditions
+- ✅ **Heartbeat loss** — Heartbeat loss during capture aborts operation (lease expired)
+- ✅ **Legacy upgrade** — Migration from legacy schema (no lease columns, no created_by_user_id) works correctly
+- ✅ **CI assertions** — Validates partial unique index, lease columns, created_by_user_id FK exist
 
 ### 7.4 Sandbox Integration Evidence (Post-Patch)
 Actual PayPal Sandbox order IDs generated, verified, and captured during the final test runs:
@@ -276,4 +287,4 @@ Actual PayPal Sandbox order IDs generated, verified, and captured during the fin
 
 **Report Approved by:** Lead Application Security Architect & Full-Stack Engineering Team  
 **StockWise Pay Version:** 1.0.0-rc3  
-**Latest Commit:** `99fe8eaf50f9529fcf81c3571991b9c38dd8c93d`
+**Latest Commit:** `f250759a66a269c2a8f5b118217b56fc41aa2c90`
