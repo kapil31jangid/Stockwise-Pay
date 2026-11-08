@@ -252,3 +252,6 @@ ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS paypal_request_id VARCHAR(
 
 -- Add lease index if not exists
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
+
+-- Add transmission_id to existing webhook_events if missing (legacy databases may not have it)
+ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS transmission_id VARCHAR(100);

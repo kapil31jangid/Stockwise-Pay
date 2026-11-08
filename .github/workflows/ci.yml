@@ -45,186 +45,240 @@ jobs:
           npm --prefix backend ci
           npm --prefix frontend ci
 
+      - name: Start PostgreSQL
+        run: |
+          sudo systemctl start postgresql
+          sleep 2
+
       - name: Validate SQL Schema & Migrations against PostgreSQL (Fresh DB)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stockwise_test
         run: |
-          # Start PostgreSQL
-          sudo systemctl start postgresql
-          sleep 2
           # Create test database
           psql -U postgres -c "CREATE DATABASE stockwise_test;" || true
           # Apply schema with strict error handling
           psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_test -f backend/src/db/schema.sql
+          # Apply supabase (seed data)
+          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_test -f backend/src/db/supabase.sql
           # Verify critical tables and constraints on fresh DB
           psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_test -c "
             -- Core tables exist
-            SELECT 'users table' AS check, CASE WHEN EXISTS (
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='users'
-            ) THEN 'PASS' ELSE 'FAIL' END AS result
-            UNION ALL SELECT 'products table', CASE WHEN EXISTS (
+            ), 'users table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='products'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'suppliers table', CASE WHEN EXISTS (
+            ), 'products table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='suppliers'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'purchase_plans table', CASE WHEN EXISTS (
+            ), 'suppliers table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='purchase_plans'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'payments table', CASE WHEN EXISTS (
+            ), 'purchase_plans table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='payments'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts table', CASE WHEN EXISTS (
+            ), 'payments table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='capture_attempts'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'webhook_events table', CASE WHEN EXISTS (
+            ), 'capture_attempts table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='webhook_events'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'revoked_tokens table', CASE WHEN EXISTS (
+            ), 'webhook_events table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='revoked_tokens'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'budget_config table', CASE WHEN EXISTS (
+            ), 'revoked_tokens table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='budget_config'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'plan_versions table', CASE WHEN EXISTS (
+            ), 'budget_config table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='plan_versions'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'approvals table', CASE WHEN EXISTS (
+            ), 'plan_versions table missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.tables WHERE table_name='approvals'
-            ) THEN 'PASS' ELSE 'FAIL' END;
+            ), 'approvals table missing');
 
             -- Critical constraints
-            SELECT 'users email UNIQUE', CASE WHEN EXISTS (
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.table_constraints
               WHERE table_name='users' AND constraint_name='users_email_key'
-            ) THEN 'PASS' ELSE 'FAIL' END AS result
-            UNION ALL SELECT 'payments paypal_order_id UNIQUE', CASE WHEN EXISTS (
+            ), 'users email UNIQUE constraint missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.table_constraints
               WHERE table_name='payments' AND constraint_name='payments_paypal_order_id_key'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts paypal_order_id UNIQUE', CASE WHEN EXISTS (
+            ), 'payments paypal_order_id UNIQUE constraint missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.table_constraints
               WHERE table_name='capture_attempts' AND constraint_name='capture_attempts_paypal_order_id_key'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'webhook_events PK on id', CASE WHEN EXISTS (
+            ), 'capture_attempts paypal_order_id UNIQUE constraint missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.table_constraints
               WHERE table_name='webhook_events' AND constraint_type='PRIMARY KEY' AND constraint_name='webhook_events_pkey'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'revoked_tokens PK', CASE WHEN EXISTS (
+            ), 'webhook_events PK on id missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.table_constraints
               WHERE table_name='revoked_tokens' AND constraint_type='PRIMARY KEY'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'purchase_plans FK to users', CASE WHEN EXISTS (
+            ), 'revoked_tokens PK missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.table_constraints
               WHERE table_name='purchase_plans' AND constraint_name='purchase_plans_created_by_user_id_fkey'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts lease_expires_at column', CASE WHEN EXISTS (
+            ), 'purchase_plans FK to users missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.columns
               WHERE table_name='capture_attempts' AND column_name='lease_expires_at'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts last_heartbeat_at column', CASE WHEN EXISTS (
+            ), 'capture_attempts lease_expires_at column missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.columns
               WHERE table_name='capture_attempts' AND column_name='last_heartbeat_at'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts lease_owner column', CASE WHEN EXISTS (
+            ), 'capture_attempts last_heartbeat_at column missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.columns
               WHERE table_name='capture_attempts' AND column_name='lease_owner'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts paypal_request_id column', CASE WHEN EXISTS (
+            ), 'capture_attempts lease_owner column missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM information_schema.columns
               WHERE table_name='capture_attempts' AND column_name='paypal_request_id'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'idx_capture_attempts_lease_expires index', CASE WHEN EXISTS (
+            ), 'capture_attempts paypal_request_id column missing');
+            SELECT assert(EXISTS (
               SELECT 1 FROM pg_indexes WHERE indexname='idx_capture_attempts_lease_expires'
-            ) THEN 'PASS' ELSE 'FAIL' END;
+            ), 'idx_capture_attempts_lease_expires index missing');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='purchase_plans' AND column_name='created_by_user_id'
+            ), 'purchase_plans created_by_user_id column missing');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM pg_indexes WHERE indexname='idx_purchase_plans_created_by'
+            ), 'idx_purchase_plans_created_by index missing');
           "
           echo "✅ Fresh PostgreSQL migration validation complete"
 
-      - name: Validate SQL Upgrade Migrations against PostgreSQL (Existing DB)
+      - name: Validate SQL Upgrade Migrations against PostgreSQL (Existing DB with Legacy Fixture)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stockwise_upgrade
         run: |
-          # Create upgrade test database (simulate existing DB with older schema)
-          sudo systemctl start postgresql
-          sleep 1
+          # Create upgrade test database
           psql -U postgres -c "CREATE DATABASE stockwise_upgrade;" || true
-          # Apply schema (this runs upgrade migrations too)
-          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -f backend/src/db/schema.sql
-          # Apply supabase (includes seed data and upgrade migrations)
-          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -f backend/src/db/supabase.sql
-          # Verify critical tables and constraints on upgraded DB
+          # Apply LEGACY schema first (simulate existing DB with old schema and data)
+          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -f backend/src/db/legacy_schema.sql
+          # Verify legacy state before upgrade
           psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -c "
-            -- Core tables exist
-            SELECT 'users table' AS check, CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.tables WHERE table_name='users'
-            ) THEN 'PASS' ELSE 'FAIL' END AS result
-            UNION ALL SELECT 'purchase_plans table', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.tables WHERE table_name='purchase_plans'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts table', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.tables WHERE table_name='capture_attempts'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'webhook_events table', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.tables WHERE table_name='webhook_events'
-            ) THEN 'PASS' ELSE 'FAIL' END;
-
-            -- Critical constraints
-            SELECT 'users email UNIQUE', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.table_constraints
-              WHERE table_name='users' AND constraint_name='users_email_key'
-            ) THEN 'PASS' ELSE 'FAIL' END AS result
-            UNION ALL SELECT 'payments paypal_order_id UNIQUE', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.table_constraints
-              WHERE table_name='payments' AND constraint_name='payments_paypal_order_id_key'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts paypal_order_id UNIQUE', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.table_constraints
-              WHERE table_name='capture_attempts' AND constraint_name='capture_attempts_paypal_order_id_key'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'webhook_events PK on id', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.table_constraints
-              WHERE table_name='webhook_events' AND constraint_type='PRIMARY KEY' AND constraint_name='webhook_events_pkey'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'revoked_tokens PK', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.table_constraints
-              WHERE table_name='revoked_tokens' AND constraint_type='PRIMARY KEY'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'purchase_plans FK to users', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.table_constraints
-              WHERE table_name='purchase_plans' AND constraint_name='purchase_plans_created_by_user_id_fkey'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts lease_expires_at column', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_name='capture_attempts' AND column_name='lease_expires_at'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts last_heartbeat_at column', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_name='capture_attempts' AND column_name='last_heartbeat_at'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts lease_owner column', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_name='capture_attempts' AND column_name='lease_owner'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'capture_attempts paypal_request_id column', CASE WHEN EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_name='capture_attempts' AND column_name='paypal_request_id'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'idx_capture_attempts_lease_expires index', CASE WHEN EXISTS (
-              SELECT 1 FROM pg_indexes WHERE indexname='idx_capture_attempts_lease_expires'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'purchase_plans created_by_user_id column', CASE WHEN EXISTS (
+            -- Verify legacy tables exist WITHOUT new columns
+            SELECT assert(NOT EXISTS (
               SELECT 1 FROM information_schema.columns
               WHERE table_name='purchase_plans' AND column_name='created_by_user_id'
-            ) THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'idx_purchase_plans_created_by index', CASE WHEN EXISTS (
-              SELECT 1 FROM pg_indexes WHERE indexname='idx_purchase_plans_created_by'
-            ) THEN 'PASS' ELSE 'FAIL' END;
+            ), 'legacy purchase_plans should NOT have created_by_user_id column');
+            SELECT assert(NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='lease_expires_at'
+            ), 'legacy capture_attempts should NOT have lease_expires_at column');
+            SELECT assert(NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='last_heartbeat_at'
+            ), 'legacy capture_attempts should NOT have last_heartbeat_at column');
+            SELECT assert(NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='lease_owner'
+            ), 'legacy capture_attempts should NOT have lease_owner column');
+            SELECT assert(NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='webhook_events' AND column_name='transmission_id'
+            ), 'legacy webhook_events should NOT have transmission_id column');
 
-            -- Verify seed data exists
-            SELECT 'seed users count', CASE WHEN (SELECT COUNT(*) FROM users) >= 3 THEN 'PASS' ELSE 'FAIL' END AS result
-            UNION ALL SELECT 'seed products count', CASE WHEN (SELECT COUNT(*) FROM products) >= 6 THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'seed suppliers count', CASE WHEN (SELECT COUNT(*) FROM suppliers) >= 4 THEN 'PASS' ELSE 'FAIL' END
-            UNION ALL SELECT 'seed offers count', CASE WHEN (SELECT COUNT(*) FROM supplier_offers) >= 14 THEN 'PASS' ELSE 'FAIL' END;
+            -- Verify legacy seed data exists
+            SELECT assert((SELECT COUNT(*) FROM users) >= 3, 'legacy seed users count < 3');
+            SELECT assert((SELECT COUNT(*) FROM purchase_plans) >= 1, 'legacy seed purchase_plans count < 1');
+            SELECT assert((SELECT COUNT(*) FROM payments) >= 1, 'legacy seed payments count < 1');
+          "
+          echo "✅ Legacy fixture verified"
+
+          # Apply upgrade migrations (schema.sql includes idempotent upgrade migrations)
+          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -f backend/src/db/schema.sql
+          # Apply supabase.sql (includes seed data and upgrade migrations)
+          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -f backend/src/db/supabase.sql
+
+          # Verify post-upgrade state
+          psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -c "
+            -- Core tables exist
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.tables WHERE table_name='users'
+            ), 'users table missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.tables WHERE table_name='purchase_plans'
+            ), 'purchase_plans table missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.tables WHERE table_name='capture_attempts'
+            ), 'capture_attempts table missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.tables WHERE table_name='webhook_events'
+            ), 'webhook_events table missing after upgrade');
+
+            -- Critical constraints AFTER upgrade
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_name='users' AND constraint_name='users_email_key'
+            ), 'users email UNIQUE constraint missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_name='payments' AND constraint_name='payments_paypal_order_id_key'
+            ), 'payments paypal_order_id UNIQUE constraint missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_name='capture_attempts' AND constraint_name='capture_attempts_paypal_order_id_key'
+            ), 'capture_attempts paypal_order_id UNIQUE constraint missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_name='webhook_events' AND constraint_type='PRIMARY KEY' AND constraint_name='webhook_events_pkey'
+            ), 'webhook_events PK on id missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_name='revoked_tokens' AND constraint_type='PRIMARY KEY'
+            ), 'revoked_tokens PK missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_name='purchase_plans' AND constraint_name='purchase_plans_created_by_user_id_fkey'
+            ), 'purchase_plans FK to users missing after upgrade');
+
+            -- New columns added by upgrade migrations
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='lease_expires_at'
+            ), 'capture_attempts lease_expires_at column missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='last_heartbeat_at'
+            ), 'capture_attempts last_heartbeat_at column missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='lease_owner'
+            ), 'capture_attempts lease_owner column missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='capture_attempts' AND column_name='paypal_request_id'
+            ), 'capture_attempts paypal_request_id column missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM pg_indexes WHERE indexname='idx_capture_attempts_lease_expires'
+            ), 'idx_capture_attempts_lease_expires index missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='purchase_plans' AND column_name='created_by_user_id'
+            ), 'purchase_plans created_by_user_id column missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM pg_indexes WHERE indexname='idx_purchase_plans_created_by'
+            ), 'idx_purchase_plans_created_by index missing after upgrade');
+            SELECT assert(EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_name='webhook_events' AND column_name='transmission_id'
+            ), 'webhook_events transmission_id column missing after upgrade');
+
+            -- Data preservation: existing records should still exist
+            SELECT assert((SELECT COUNT(*) FROM users) >= 3, 'seed users lost during upgrade');
+            SELECT assert((SELECT COUNT(*) FROM purchase_plans) >= 1, 'seed purchase_plans lost during upgrade');
+            SELECT assert((SELECT COUNT(*) FROM payments) >= 1, 'seed payments lost during upgrade');
+            SELECT assert((SELECT COUNT(*) FROM products) >= 6, 'seed products lost during upgrade');
+            SELECT assert((SELECT COUNT(*) FROM suppliers) >= 4, 'seed suppliers lost during upgrade');
+            SELECT assert((SELECT COUNT(*) FROM supplier_offers) >= 14, 'seed offers lost during upgrade');
+
+            -- Verify purchase_plans created_by_user_id is NULL for legacy records (nullable FK)
+            SELECT assert((SELECT COUNT(*) FROM purchase_plans WHERE created_by_user_id IS NULL) >= 1, 'legacy purchase_plans should have NULL created_by_user_id');
           "
           echo "✅ Upgrade PostgreSQL migration validation complete"
 

@@ -506,17 +506,26 @@ class DatabaseStore {
    * Returns "RECONCILE:<attemptId>" if reconciliation with PayPal is needed before takeover.
    * Uses lease/heartbeat mechanism: active lease prevents takeover; expired lease requires
    * reconciliation with live PayPal state before safe takeover.
+   *
+   * IMPORTANT: After reconciliation returns APPROVED, the caller MUST call this again
+   * with forceNewAttempt=true to get a completely fresh attempt ID, not reuse the old one.
    */
-  async tryAcquireCaptureLock(paypalOrderId: string, paymentId: string, instanceId: string, paypalRequestId: string): Promise<string | null> {
+  async tryAcquireCaptureLock(
+    paypalOrderId: string,
+    paymentId: string,
+    instanceId: string,
+    paypalRequestId: string,
+    forceNewAttempt: boolean = false
+  ): Promise<string | null> {
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN;');
 
-        // Check for existing capture attempt
+        // Check for existing capture attempt - order by started_at DESC to get latest attempt first
         const existingRes = await client.query(
           `SELECT id, status, started_at, lease_expires_at, lease_owner, paypal_capture_id, paypal_request_id
-           FROM capture_attempts WHERE paypal_order_id = $1 FOR UPDATE;`,
+           FROM capture_attempts WHERE paypal_order_id = $1 ORDER BY started_at DESC FOR UPDATE;`,
           [paypalOrderId]
         );
 
@@ -547,7 +556,34 @@ class DatabaseStore {
             return `RECONCILE:${existing.id}`;
           }
 
-          // Safe to take over stale attempt - update with new lease
+          // If forceNewAttempt is true (after successful reconciliation), mark old attempt as superseded
+          // and create a brand new attempt record
+          if (forceNewAttempt) {
+            // Mark old attempt as superseded (not failed, just superseded by new attempt)
+            await client.query(
+              `UPDATE capture_attempts
+               SET status = 'SUPERSEDED',
+                   error_message = 'Superseded by new attempt after reconciliation',
+                   completed_at = CURRENT_TIMESTAMP,
+                   lease_expires_at = NULL,
+                   lease_owner = NULL
+               WHERE id = $1;`,
+              [existing.id]
+            );
+
+            // Insert new attempt with fresh lease
+            const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const leaseExpires = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+            await client.query(
+              `INSERT INTO capture_attempts (id, paypal_order_id, payment_id, status, started_at, lease_expires_at, last_heartbeat_at, lease_owner, paypal_request_id)
+               VALUES ($1, $2, $3, 'CAPTURING', CURRENT_TIMESTAMP, $4, CURRENT_TIMESTAMP, $5, $6);`,
+              [attemptId, paypalOrderId, paymentId, leaseExpires, instanceId, paypalRequestId]
+            );
+            await client.query('COMMIT;');
+            return attemptId;
+          }
+
+          // Safe to take over stale attempt - update with new lease (legacy path)
           const newLeaseExpires = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
           await client.query(
             `UPDATE capture_attempts
@@ -601,7 +637,34 @@ class DatabaseStore {
       if (existing.paypalCaptureId || existing.paypalRequestId) {
         return `RECONCILE:${existing.id}`;
       }
-      // Stale - allow takeover with new lease
+      // If forceNewAttempt, create new record instead of reusing old one
+      if (forceNewAttempt) {
+        // Mark old as superseded
+        existing.status = 'SUPERSEDED';
+        existing.errorMessage = 'Superseded by new attempt after reconciliation';
+        existing.completedAt = new Date().toISOString();
+        existing.leaseExpiresAt = null;
+        existing.leaseOwner = null;
+
+        // Create fresh attempt
+        const attemptId = `CAP-ATT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        if (!this.state.captureAttempts) this.state.captureAttempts = [];
+        this.state.captureAttempts.push({
+          id: attemptId,
+          paypalOrderId,
+          paymentId,
+          status: 'CAPTURING',
+          startedAt: new Date().toISOString(),
+          leaseExpiresAt: new Date(now + 5 * 60 * 1000).toISOString(),
+          lastHeartbeatAt: new Date().toISOString(),
+          leaseOwner: instanceId,
+          paypalRequestId: paypalRequestId,
+          retryCount: 0
+        });
+        this.save();
+        return attemptId;
+      }
+      // Stale - allow takeover with new lease (legacy path)
       existing.status = 'CAPTURING';
       existing.retryCount = (existing.retryCount || 0) + 1;
       existing.startedAt = new Date().toISOString();
@@ -666,10 +729,15 @@ class DatabaseStore {
   /**
    * Reconcile a stale capture attempt with live PayPal state before takeover.
    * Performs actual PayPal API call to verify order state.
-   * Returns the existing capture ID if already completed, null if safe to proceed.
-   * Throws if PayPal state cannot be determined (fail closed).
+   * Returns ReconciliationResult with status and capture ID if completed.
+   * Never returns a RECONCILE marker - that is handled at the call site.
+   * Fail closed when PayPal state is unavailable or ambiguous.
    */
-  async reconcileCaptureAttempt(paypalOrderId: string, existingAttemptId: string, accessToken: string): Promise<string | null> {
+  async reconcileCaptureAttempt(paypalOrderId: string, existingAttemptId: string, accessToken: string): Promise<{
+    status: 'COMPLETED' | 'APPROVED' | 'FAILED' | 'UNKNOWN';
+    captureId?: string;
+    error?: string;
+  }> {
     if (this.pgPool) {
       try {
         // First check local DB for existing completion
@@ -680,7 +748,7 @@ class DatabaseStore {
         if (localRes.rows.length > 0) {
           const attempt = localRes.rows[0];
           if (attempt.status === 'COMPLETED' && attempt.paypal_capture_id) {
-            return attempt.paypal_capture_id; // Already completed in DB, return capture ID
+            return { status: 'COMPLETED', captureId: attempt.paypal_capture_id }; // Already completed in DB
           }
         }
 
@@ -696,7 +764,7 @@ class DatabaseStore {
 
         if (!orderRes.ok) {
           const errText = await orderRes.text();
-          throw new Error(`PayPal reconciliation failed: Unable to verify order state (HTTP ${orderRes.status}): ${errText}`);
+          return { status: 'FAILED', error: `PayPal reconciliation failed: Unable to verify order state (HTTP ${orderRes.status}): ${errText}` };
         }
 
         const liveOrder = await orderRes.json() as any;
@@ -716,30 +784,31 @@ class DatabaseStore {
                WHERE id = $2;`,
               [completedCapture.id, existingAttemptId]
             );
-            return completedCapture.id;
+            return { status: 'COMPLETED', captureId: completedCapture.id };
           }
-          throw new Error(`PayPal reconciliation failed: Order COMPLETED but no valid capture found`);
+          return { status: 'FAILED', error: 'PayPal reconciliation failed: Order COMPLETED but no valid capture found' };
         }
 
         // If order is APPROVED but not captured, safe to proceed with new attempt
         if (liveOrder.status === 'APPROVED') {
-          return null; // Safe to acquire new lease and retry capture
+          return { status: 'APPROVED', captureId: undefined }; // Safe to acquire new lease and retry capture
         }
 
         // Any other state - fail closed
-        throw new Error(`PayPal reconciliation failed: Order in unexpected state '${liveOrder.status}', cannot safely proceed`);
+        return { status: 'FAILED', error: `PayPal reconciliation failed: Order in unexpected state '${liveOrder.status}', cannot safely proceed` };
       } catch (err) {
         this.handlePgError('reconcileCaptureAttempt', err);
-        throw err;
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return { status: 'FAILED', error: `PayPal reconciliation error: ${errorMessage}` };
       }
     }
 
     // Local fallback - cannot do real PayPal API call, fail closed for safety
     const existing = this.state.captureAttempts?.find(c => c.id === existingAttemptId);
     if (existing && existing.status === 'COMPLETED' && existing.paypalCaptureId) {
-      return existing.paypalCaptureId;
+      return { status: 'COMPLETED', captureId: existing.paypalCaptureId };
     }
-    throw new Error('PayPal reconciliation requires database connection in production');
+    return { status: 'FAILED', error: 'PayPal reconciliation requires database connection in production' };
   }
 
   /**
@@ -764,39 +833,64 @@ class DatabaseStore {
     return existing?.leaseOwner === instanceId && existing?.status === 'CAPTURING';
   }
 
+  /**
+   * Complete a capture attempt with lease ownership verification inside a database transaction.
+   * This ensures atomic verification and settlement - preventing another instance from
+   * taking over while the original instance is still performing a valid capture.
+   */
   async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string, instanceId?: string): Promise<void> {
     if (this.pgPool) {
+      const client = await this.pgPool.connect();
       try {
-        // Verify lease ownership before completing (if instanceId provided)
+        await client.query('BEGIN;');
+
+        // Verify lease ownership inside the transaction if instanceId provided
         if (instanceId) {
-          const ownsLease = await this.verifyLeaseOwnership(attemptId, instanceId);
-          if (!ownsLease) {
+          const res = await client.query(
+            `SELECT lease_owner FROM capture_attempts WHERE id = $1 AND status = 'CAPTURING' FOR UPDATE;`,
+            [attemptId]
+          );
+          if (res.rows.length === 0) {
+            await client.query('ROLLBACK;');
+            throw new Error(`Capture attempt ${attemptId} not found or not in CAPTURING state.`);
+          }
+          if (res.rows[0].lease_owner !== instanceId) {
+            await client.query('ROLLBACK;');
             throw new Error(`Lease ownership verification failed for attempt ${attemptId}. Another instance may have taken over.`);
           }
         }
 
         if (error) {
-          await this.pgPool.query(
+          await client.query(
             `UPDATE capture_attempts SET status = 'FAILED', error_message = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
             [error, attemptId]
           );
         } else {
-          await this.pgPool.query(
+          await client.query(
             `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
             [paypalCaptureId, attemptId]
           );
         }
+
+        await client.query('COMMIT;');
         return;
       } catch (err) {
+        await client.query('ROLLBACK;');
         this.handlePgError('completeCaptureAttempt', err);
         throw err;
+      } finally {
+        client.release();
       }
     }
 
+    // Local fallback - atomic in single-threaded context
     const idx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
     if (idx !== undefined && idx >= 0) {
       if (instanceId && this.state.captureAttempts[idx].leaseOwner !== instanceId) {
         throw new Error(`Lease ownership verification failed for attempt ${attemptId}. Another instance may have taken over.`);
+      }
+      if (this.state.captureAttempts[idx].status !== 'CAPTURING') {
+        throw new Error(`Capture attempt ${attemptId} not found or not in CAPTURING state.`);
       }
       if (error) {
         this.state.captureAttempts[idx].status = 'FAILED';
@@ -809,6 +903,8 @@ class DatabaseStore {
       this.state.captureAttempts[idx].leaseExpiresAt = null;
       this.state.captureAttempts[idx].leaseOwner = null;
       this.save();
+    } else {
+      throw new Error(`Capture attempt ${attemptId} not found.`);
     }
   }
 
@@ -1776,3 +1872,14 @@ class DatabaseStore {
 }
 
 export const db = new DatabaseStore();
+
+// Export a query helper for tests that works with both PostgreSQL and local store
+export async function query(sql: string, params: any[] = []): Promise<{ rows: any[]; rowCount: number | null }> {
+  const store = db as any;
+  if (store.pgPool) {
+    const res = await store.pgPool.query(sql, params);
+    return { rows: res.rows, rowCount: res.rowCount };
+  }
+  // Local store fallback - very limited, only for test setup
+  throw new Error('Local store does not support arbitrary SQL queries. Use direct store manipulation for tests.');
+}
