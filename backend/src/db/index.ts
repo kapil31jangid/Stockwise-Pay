@@ -665,40 +665,116 @@ class DatabaseStore {
 
   /**
    * Reconcile a stale capture attempt with live PayPal state before takeover.
+   * Performs actual PayPal API call to verify order state.
    * Returns the existing capture ID if already completed, null if safe to proceed.
+   * Throws if PayPal state cannot be determined (fail closed).
    */
-  async reconcileCaptureAttempt(paypalOrderId: string, existingAttemptId: string): Promise<string | null> {
+  async reconcileCaptureAttempt(paypalOrderId: string, existingAttemptId: string, accessToken: string): Promise<string | null> {
     if (this.pgPool) {
       try {
-        const res = await this.pgPool.query(
+        // First check local DB for existing completion
+        const localRes = await this.pgPool.query(
           `SELECT paypal_capture_id, paypal_request_id, status FROM capture_attempts WHERE id = $1;`,
           [existingAttemptId]
         );
-        if (res.rows.length > 0) {
-          const attempt = res.rows[0];
+        if (localRes.rows.length > 0) {
+          const attempt = localRes.rows[0];
           if (attempt.status === 'COMPLETED' && attempt.paypal_capture_id) {
-            return attempt.paypal_capture_id; // Already completed, return capture ID
+            return attempt.paypal_capture_id; // Already completed in DB, return capture ID
           }
-          // For stale CAPTURING without capture ID, return null to allow takeover after reconciliation
-          // The caller should verify with PayPal API before proceeding
         }
-        return null;
+
+        // Perform actual PayPal API reconciliation
+        const PAYPAL_API_BASE = process.env.PAYPAL_API_BASE || 'https://api-m.sandbox.paypal.com';
+        const orderRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${paypalOrderId}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!orderRes.ok) {
+          const errText = await orderRes.text();
+          throw new Error(`PayPal reconciliation failed: Unable to verify order state (HTTP ${orderRes.status}): ${errText}`);
+        }
+
+        const liveOrder = await orderRes.json() as any;
+
+        // If order is COMPLETED, extract capture details
+        if (liveOrder.status === 'COMPLETED') {
+          const completedCapture = liveOrder.purchase_units?.[0]?.payments?.captures?.[0];
+          if (completedCapture && completedCapture.status === 'COMPLETED' && completedCapture.id) {
+            // Update local capture_attempts record with the captured ID
+            await this.pgPool.query(
+              `UPDATE capture_attempts
+               SET status = 'COMPLETED',
+                   paypal_capture_id = $1,
+                   completed_at = CURRENT_TIMESTAMP,
+                   lease_expires_at = NULL,
+                   lease_owner = NULL
+               WHERE id = $2;`,
+              [completedCapture.id, existingAttemptId]
+            );
+            return completedCapture.id;
+          }
+          throw new Error(`PayPal reconciliation failed: Order COMPLETED but no valid capture found`);
+        }
+
+        // If order is APPROVED but not captured, safe to proceed with new attempt
+        if (liveOrder.status === 'APPROVED') {
+          return null; // Safe to acquire new lease and retry capture
+        }
+
+        // Any other state - fail closed
+        throw new Error(`PayPal reconciliation failed: Order in unexpected state '${liveOrder.status}', cannot safely proceed`);
       } catch (err) {
         this.handlePgError('reconcileCaptureAttempt', err);
         throw err;
       }
     }
-    // Local fallback
+
+    // Local fallback - cannot do real PayPal API call, fail closed for safety
     const existing = this.state.captureAttempts?.find(c => c.id === existingAttemptId);
     if (existing && existing.status === 'COMPLETED' && existing.paypalCaptureId) {
       return existing.paypalCaptureId;
     }
-    return null;
+    throw new Error('PayPal reconciliation requires database connection in production');
   }
 
-  async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string): Promise<void> {
+  /**
+   * Verify lease ownership before completing a capture attempt.
+   * Prevents race conditions where another instance might have taken over the lease.
+   */
+  async verifyLeaseOwnership(attemptId: string, instanceId: string): Promise<boolean> {
     if (this.pgPool) {
       try {
+        const res = await this.pgPool.query(
+          `SELECT lease_owner FROM capture_attempts WHERE id = $1 AND status = 'CAPTURING';`,
+          [attemptId]
+        );
+        if (res.rows.length === 0) return false;
+        return res.rows[0].lease_owner === instanceId;
+      } catch (err) {
+        this.handlePgError('verifyLeaseOwnership', err);
+        throw err;
+      }
+    }
+    const existing = this.state.captureAttempts?.find(c => c.id === attemptId);
+    return existing?.leaseOwner === instanceId && existing?.status === 'CAPTURING';
+  }
+
+  async completeCaptureAttempt(attemptId: string, paypalCaptureId: string, error?: string, instanceId?: string): Promise<void> {
+    if (this.pgPool) {
+      try {
+        // Verify lease ownership before completing (if instanceId provided)
+        if (instanceId) {
+          const ownsLease = await this.verifyLeaseOwnership(attemptId, instanceId);
+          if (!ownsLease) {
+            throw new Error(`Lease ownership verification failed for attempt ${attemptId}. Another instance may have taken over.`);
+          }
+        }
+
         if (error) {
           await this.pgPool.query(
             `UPDATE capture_attempts SET status = 'FAILED', error_message = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
@@ -719,6 +795,9 @@ class DatabaseStore {
 
     const idx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
     if (idx !== undefined && idx >= 0) {
+      if (instanceId && this.state.captureAttempts[idx].leaseOwner !== instanceId) {
+        throw new Error(`Lease ownership verification failed for attempt ${attemptId}. Another instance may have taken over.`);
+      }
       if (error) {
         this.state.captureAttempts[idx].status = 'FAILED';
         this.state.captureAttempts[idx].errorMessage = error;

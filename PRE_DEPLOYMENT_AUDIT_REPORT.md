@@ -1,6 +1,6 @@
 # StockWise Pay — Master Pre-Deployment Audit Report
 
-**Date:** November 7, 2026  
+**Date:** November 8, 2026  
 **Project:** StockWise Pay (PayPal AI Hackathon 2026)  
 **Target Repository:** [github.com/kapil31jangid/Stockwise-Pay](https://github.com/kapil31jangid/Stockwise-Pay)  
 **Audit Scope:** Full-Stack Architecture, Algorithmic Modules, REST APIs, Cryptographic Security & RBAC, Database Persistence & Atomicity, PayPal Orders v2 Sandbox, Concurrency Locks, Testing Coverage, Deployment Readiness.
@@ -16,7 +16,7 @@ StockWise Pay is an AI-assisted, budget-aware replenishment and checkout platfor
 - **Major Strengths:**
   1. **Strict Version-Locked Approval Gate:** Modifying any plan item, quantity, or budget immediately increments the plan version and invalidates prior approvals. Unapproved or modified plans strictly cannot generate PayPal orders (`400 Bad Request`).
   2. **Cryptographic JWT Authentication & RBAC:** Tokens are HMAC-SHA256 signed using Node.js `crypto` with `timingSafeEqual` constant-time verification. Arbitrary self-registration is strictly rejected (`401 Invalid Credentials`). Role permissions (`requireRole`, `requirePermission`) forbid unauthorized actors (e.g., Buyer role cannot approve plans or execute PayPal captures).
-  3. **Authoritative Server-Side Financial Totals & Concurrency Locks:** All payment amounts, volume discounts, and logistics fees are computed server-side. In-flight PayPal captures are protected against duplicate/concurrent execution via an in-memory lock (`activeCaptures`) and idempotent state verification.
+  3. **Authoritative Server-Side Financial Totals & Concurrency Locks:** All payment amounts, volume discounts, and logistics fees are computed server-side. In-flight PayPal captures are protected against duplicate/concurrent execution via a persistent `capture_attempts` table with lease/heartbeat mechanism (5-min lease, 2-min heartbeat renewal) and atomic INSERT with unique constraint on `paypal_order_id`, plus `PayPal-Request-Id` header for API-level idempotency.
   4. **PostgreSQL / Supabase Persistence & Atomic Transactions:** Dual-engine architecture connects to Supabase/PostgreSQL with startup verification (`verifyConnection()`). Multi-table payment capture is executed within a database transaction locking payments, budget spending, plan status, and immutable audit logs.
   5. **Zero "Free" Unprotected APIs:** Edge middleware forces unauthenticated frontend visitors directly to `/login`. Central backend middleware (`requireAuth`) rejects all unauthenticated API requests to business routes with `401 Unauthorized`.
 - **Critical Blockers for Live Production (vs Sandbox Demo):**

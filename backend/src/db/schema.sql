@@ -1,6 +1,24 @@
 -- StockWise Pay Database Schema
 -- Compatible with PostgreSQL 14+ / Supabase / Neon / Render
+-- Order matters: referenced tables must be created before referencing tables
 
+-- 1. USERS TABLE (must be first - referenced by purchase_plans)
+CREATE TABLE IF NOT EXISTS users (
+  id VARCHAR(50) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL,
+  display_role VARCHAR(100) NOT NULL,
+  department VARCHAR(100) NOT NULL,
+  avatar_initials VARCHAR(10) NOT NULL,
+  badge VARCHAR(50) NOT NULL,
+  permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. PRODUCTS TABLE
 CREATE TABLE IF NOT EXISTS products (
   sku VARCHAR(50) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -14,6 +32,7 @@ CREATE TABLE IF NOT EXISTS products (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 3. SUPPLIERS TABLE
 CREATE TABLE IF NOT EXISTS suppliers (
   id VARCHAR(50) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -27,6 +46,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 4. SUPPLIER OFFERS TABLE
 CREATE TABLE IF NOT EXISTS supplier_offers (
   id VARCHAR(50) PRIMARY KEY,
   sku VARCHAR(50) NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
@@ -40,6 +60,7 @@ CREATE TABLE IF NOT EXISTS supplier_offers (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 5. PURCHASE PLANS TABLE (references users)
 CREATE TABLE IF NOT EXISTS purchase_plans (
   id VARCHAR(50) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -57,6 +78,7 @@ CREATE TABLE IF NOT EXISTS purchase_plans (
 
 CREATE INDEX IF NOT EXISTS idx_purchase_plans_created_by ON purchase_plans(created_by_user_id);
 
+-- 6. PLAN VERSIONS TABLE
 CREATE TABLE IF NOT EXISTS plan_versions (
   id VARCHAR(50) PRIMARY KEY,
   plan_id VARCHAR(50) NOT NULL REFERENCES purchase_plans(id) ON DELETE CASCADE,
@@ -69,6 +91,7 @@ CREATE TABLE IF NOT EXISTS plan_versions (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 7. APPROVALS TABLE
 CREATE TABLE IF NOT EXISTS approvals (
   id VARCHAR(50) PRIMARY KEY,
   purchase_plan_id VARCHAR(50) NOT NULL REFERENCES purchase_plans(id) ON DELETE CASCADE,
@@ -80,6 +103,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 8. PAYMENTS TABLE
 CREATE TABLE IF NOT EXISTS payments (
   id VARCHAR(50) PRIMARY KEY,
   purchase_plan_id VARCHAR(50) NOT NULL REFERENCES purchase_plans(id),
@@ -96,6 +120,7 @@ CREATE TABLE IF NOT EXISTS payments (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 9. PAYMENT EVENTS / WEBHOOKS TABLE
 CREATE TABLE IF NOT EXISTS payment_events (
   id VARCHAR(50) PRIMARY KEY,
   paypal_order_id VARCHAR(100) NOT NULL,
@@ -106,6 +131,7 @@ CREATE TABLE IF NOT EXISTS payment_events (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 10. INVENTORY IMPORTS TABLE
 CREATE TABLE IF NOT EXISTS inventory_imports (
   id VARCHAR(50) PRIMARY KEY,
   file_name VARCHAR(255) NOT NULL,
@@ -117,6 +143,7 @@ CREATE TABLE IF NOT EXISTS inventory_imports (
   imported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 11. AI AGENT RUNS TABLE
 CREATE TABLE IF NOT EXISTS ai_agent_runs (
   id VARCHAR(50) PRIMARY KEY,
   request_type VARCHAR(100) NOT NULL,
@@ -128,6 +155,7 @@ CREATE TABLE IF NOT EXISTS ai_agent_runs (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 12. AUDIT LOGS TABLE
 CREATE TABLE IF NOT EXISTS audit_logs (
   id VARCHAR(50) PRIMARY KEY,
   actor VARCHAR(100) NOT NULL,
@@ -140,6 +168,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 13. BUDGET CONFIG TABLE
 CREATE TABLE IF NOT EXISTS budget_config (
   id VARCHAR(50) PRIMARY KEY DEFAULT 'default',
   monthly_budget NUMERIC(10, 2) NOT NULL DEFAULT 5000.00,
@@ -148,27 +177,14 @@ CREATE TABLE IF NOT EXISTS budget_config (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS users (
-  id VARCHAR(50) PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  password_hash VARCHAR(255) NOT NULL,
-  role VARCHAR(50) NOT NULL,
-  display_role VARCHAR(100) NOT NULL,
-  department VARCHAR(100) NOT NULL,
-  avatar_initials VARCHAR(10) NOT NULL,
-  badge VARCHAR(50) NOT NULL,
-  permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
+-- 14. REVOKED TOKENS TABLE
 CREATE TABLE IF NOT EXISTS revoked_tokens (
   token_hash VARCHAR(64) PRIMARY KEY,
   expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 15. WEBHOOK EVENTS TABLE (deduplication by event.id)
 CREATE TABLE IF NOT EXISTS webhook_events (
   id VARCHAR(100) PRIMARY KEY,
   transmission_id VARCHAR(100),
@@ -180,7 +196,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Capture state table for distributed locking across service instances
+-- 16. CAPTURE ATTEMPTS TABLE (distributed locking with lease/heartbeat)
 -- Ensures exactly one capture per PayPal order across multiple backend instances
 -- Includes lease/heartbeat mechanism to prevent premature takeover of long-running captures
 CREATE TABLE IF NOT EXISTS capture_attempts (
@@ -204,4 +220,35 @@ CREATE INDEX IF NOT EXISTS idx_capture_attempts_payment_id ON capture_attempts(p
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_status_started ON capture_attempts(status, started_at);
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
 
+-- ==============================================================================
+-- UPGRADE MIGRATIONS (idempotent - safe to run multiple times)
+-- ==============================================================================
 
+-- Add created_by_user_id column to existing purchase_plans if missing
+ALTER TABLE purchase_plans ADD COLUMN IF NOT EXISTS created_by_user_id VARCHAR(50);
+
+-- Add foreign key constraint if not exists
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE table_name = 'purchase_plans'
+    AND constraint_name = 'purchase_plans_created_by_user_id_fkey'
+  ) THEN
+    ALTER TABLE purchase_plans
+    ADD CONSTRAINT purchase_plans_created_by_user_id_fkey
+    FOREIGN KEY (created_by_user_id) REFERENCES users(id);
+  END IF;
+END $$;
+
+-- Add index if not exists
+CREATE INDEX IF NOT EXISTS idx_purchase_plans_created_by ON purchase_plans(created_by_user_id);
+
+-- Add lease/heartbeat columns to existing capture_attempts if missing
+ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '5 minutes');
+ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(100);
+ALTER TABLE capture_attempts ADD COLUMN IF NOT EXISTS paypal_request_id VARCHAR(100);
+
+-- Add lease index if not exists
+CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
