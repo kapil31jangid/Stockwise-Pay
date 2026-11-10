@@ -48,6 +48,7 @@ jobs:
       - name: Start PostgreSQL
         run: |
           sudo systemctl start postgresql
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD 'postgres';"
           sleep 2
 
       - name: Validate SQL Schema & Migrations against PostgreSQL (Fresh DB)
