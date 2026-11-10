@@ -42,6 +42,7 @@ data/
 next-env.d.ts
 
 node_modules/
+.playwright-mcp/
 .env
 .env.*
 !.env.example

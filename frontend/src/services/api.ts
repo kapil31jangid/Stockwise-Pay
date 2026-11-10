@@ -507,9 +507,23 @@ export const api = {
     amount: number;
     currency: string;
     items: { name: string; quantity: number; unitPrice: number }[];
-  }): Promise<{ orderId: string; approvalUrl: string; status: string }> {
+  }): Promise<{
+    orderId: string;
+    approvalUrl: string;
+    status: string;
+    amount: number;
+    currency: string;
+    isMock?: boolean;
+  }> {
     if (API_BASE_URL) {
-      return fetchJson<{ orderId: string; approvalUrl: string; status: string }>(`${API_BASE_URL}/paypal/orders`, {
+      return fetchJson<{
+        orderId: string;
+        approvalUrl: string;
+        status: string;
+        amount: number;
+        currency: string;
+        isMock?: boolean;
+      }>(`${API_BASE_URL}/paypal/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ planId: orderPayload.planId }),
@@ -519,6 +533,9 @@ export const api = {
       orderId: `PAYPAL-SANDBOX-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
       approvalUrl: `https://www.sandbox.paypal.com/checkoutnow?token=EC-${Date.now()}`,
       status: "CREATED",
+      amount: Number(orderPayload.amount.toFixed(2)),
+      currency: orderPayload.currency,
+      isMock: true,
     };
   },
 

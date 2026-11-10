@@ -38,6 +38,8 @@ export default function PaymentsPage() {
   const [pendingOrder, setPendingOrder] = useState<{
     orderId: string;
     approvalUrl: string;
+    amount: number;
+    currency: string;
     isMock?: boolean;
   } | null>(null);
   const [lastPaymentResult, setLastPaymentResult] = useState<PaymentRecord | null>(null);
@@ -136,7 +138,13 @@ export default function PaymentsPage() {
         })),
       });
 
-      setPendingOrder(order);
+      setPendingOrder({
+        orderId: order.orderId,
+        approvalUrl: order.approvalUrl,
+        amount: Number(order.amount),
+        currency: order.currency,
+        isMock: order.isMock,
+      });
       setPaymentStep("ready_to_capture");
 
       // In real sandbox mode with external approval link, open popup for buyer authorization
@@ -164,8 +172,8 @@ export default function PaymentsPage() {
         orderId: pendingOrder.orderId,
         planTitle: activePlan.title || `Restock Plan #${activePlan.id}`,
         supplierName: (activePlan.items && activePlan.items[0]?.selectedSupplierName) || "VoltCore & Apex Wholesale Consolidated",
-        amount: activePlan.totalAmount ?? 0,
-        currency: currency,
+        amount: pendingOrder.amount,
+        currency: pendingOrder.currency,
         itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} electronics SKUs (${activePlan.title || 'Restock'})`,
       });
 
@@ -479,6 +487,9 @@ export default function PaymentsPage() {
                   <Clock className="w-4 h-4 text-blue-600 shrink-0" />
                   <span>PayPal Sandbox Order: <strong className="font-mono">{pendingOrder?.orderId}</strong></span>
                 </div>
+                <p className="text-[11px] text-blue-900 font-semibold">
+                  Authoritative checkout total: {pendingOrder?.currency} {pendingOrder?.amount.toFixed(2)}
+                </p>
                 <p className="text-[11px] text-blue-800 leading-relaxed">
                   Please log in and authorize payment using your configured PayPal Sandbox buyer account. Once authorized, confirm capture to settle the order.
                 </p>
