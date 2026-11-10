@@ -262,7 +262,7 @@ INSERT INTO plan_versions (id, plan_id, version_number, budget, calculated_total
 
 -- Insert legacy completed payment
 INSERT INTO payments (id, purchase_plan_id, plan_version, paypal_order_id, paypal_capture_id, amount, currency, payment_method, verified_status, payer_email, created_at, updated_at) VALUES
-('PAY-1001', 'PLAN-2026-000', 1, '8AA1234567890123', '9BB9876543210987', 1450.00, 'USD', 'PayPal Sandbox', 'COMPLETED', 'buyer-retail@stockwise.test', NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days');
+('PAY-1001', 'PLAN-2026-001', 1, '8AA1234567890123', '9BB9876543210987', 1450.00, 'USD', 'PayPal Sandbox', 'COMPLETED', 'buyer-retail@stockwise.test', NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days');
 
 -- Insert legacy audit log
 INSERT INTO audit_logs (id, actor, action, entity_type, entity_id, previous_status, new_status, details, created_at) VALUES
