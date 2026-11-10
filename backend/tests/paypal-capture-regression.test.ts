@@ -2136,3 +2136,613 @@ test('Reconciliation: Stale worker cannot settle after lease takeover by another
   const payment = await db.getPayment(paymentId);
   assert.equal(payment?.verifiedStatus, 'COMPLETED', 'Payment should be completed by new instance');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TARGETED IDENTITY VALIDATION REGRESSION TESTS (P1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 1. Already-completed payment with matching capture ID
+test('Reconciliation: Idempotent reconciliation with matching capture ID succeeds', async () => {
+  await db.resetToSeed();
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId = `ORD-TEST-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const captureId = `CAP-MATCH-${Date.now()}`;
+  const instanceId = `test-instance-1`;
+
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId,
+    amount: 150.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, instanceId, `CAP-${paypalOrderId}`);
+  assert.ok(attemptId);
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId}`, attemptId]
+  );
+
+  // First reconciliation - settles payment
+  await db.settleReconciliationTransaction({
+    attemptId,
+    paymentId,
+    planId,
+    captureId,
+    captureAmount: 150.00,
+    captureCurrency: 'USD',
+    expectedAmount: 150.00,
+    expectedCurrency: 'USD',
+    actor: 'Reconciliation Engine 1',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+  });
+
+  // Verify payment is COMPLETED
+  let payment = await db.getPayment(paymentId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.equal(payment?.paypalCaptureId, captureId);
+
+  // Second reconciliation with SAME capture ID - should succeed (idempotent)
+  await db.settleReconciliationTransaction({
+    attemptId,
+    paymentId,
+    planId,
+    captureId,
+    captureAmount: 150.00,
+    captureCurrency: 'USD',
+    expectedAmount: 150.00,
+    expectedCurrency: 'USD',
+    actor: 'Reconciliation Engine 2',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+  });
+
+  // Payment should still be COMPLETED with same capture ID
+  payment = await db.getPayment(paymentId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.equal(payment?.paypalCaptureId, captureId);
+
+  // Budget should only be spent once
+  const budget = await db.getBudget();
+  assert.equal(budget.spentAmount, 1350.00, 'Budget should be 1200 + 150 = 1350');
+
+  // Only one audit log for this capture
+  const auditLogs = await db.getAuditLogs();
+  const captureLogs = auditLogs.filter((l: any) => l.action === 'CAPTURE_PAYPAL_ORDER_RECONCILIATION' && l.details?.captureId === captureId);
+  assert.equal(captureLogs.length, 1, 'Should have exactly one reconciliation audit log');
+});
+
+// 2. Already-completed payment with a different incoming capture ID (should fail)
+test('Reconciliation: Idempotent reconciliation with different capture ID fails', async () => {
+  await db.resetToSeed();
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId = `ORD-TEST-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const captureId1 = `CAP-MATCH-${Date.now()}`;
+  const captureId2 = `CAP-DIFFERENT-${Date.now()}`;
+  const instanceId = `test-instance-1`;
+
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId,
+    amount: 100.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, instanceId, `CAP-${paypalOrderId}`);
+  assert.ok(attemptId);
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId}`, attemptId]
+  );
+
+  // First reconciliation - settles payment
+  await db.settleReconciliationTransaction({
+    attemptId,
+    paymentId,
+    planId,
+    captureId: captureId1,
+    captureAmount: 100.00,
+    captureCurrency: 'USD',
+    expectedAmount: 100.00,
+    expectedCurrency: 'USD',
+    actor: 'Reconciliation Engine 1',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId1 }
+  });
+
+  // Second reconciliation with DIFFERENT capture ID - should fail
+  await assert.rejects(
+    async () => {
+      await db.settleReconciliationTransaction({
+        attemptId,
+        paymentId,
+        planId,
+        captureId: captureId2,
+        captureAmount: 100.00,
+        captureCurrency: 'USD',
+        expectedAmount: 100.00,
+        expectedCurrency: 'USD',
+        actor: 'Reconciliation Engine 2',
+        payerEmail: 'buyer@test.com',
+        rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId2 }
+      });
+    },
+    /Reconciliation conflict: payment already has capture ID/
+  );
+
+  // Payment should remain with original capture ID
+  const payment = await db.getPayment(paymentId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.equal(payment?.paypalCaptureId, captureId1);
+});
+
+// 3. Attempt belonging to a different payment
+test('Reconciliation: Attempt belonging to different payment fails', async () => {
+  await db.resetToSeed();
+  const paypalOrderId1 = `ORD-TEST-1-${Date.now()}`;
+  const paypalOrderId2 = `ORD-TEST-2-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const captureId = `CAP-TEST-${Date.now()}`;
+
+  // Create first payment
+  const paymentId1 = `PAY-TEST-${Date.now()}`;
+  await db.savePayment({
+    id: paymentId1,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId: paypalOrderId1,
+    amount: 100.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  // Create second payment with DIFFERENT PayPal order ID
+  const paymentId2 = `PAY-TEST-${Date.now()}`;
+  await db.savePayment({
+    id: paymentId2,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId: paypalOrderId2,
+    amount: 200.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  // Acquire lock for first payment
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId1, paymentId1, 'instance-1', `CAP-${paypalOrderId1}`);
+  assert.ok(attemptId);
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId1}`, attemptId]
+  );
+
+  // Try to reconcile using second payment's ID but first attempt's ID
+  await assert.rejects(
+    async () => {
+      await db.settleReconciliationTransaction({
+        attemptId,
+        paymentId: paymentId2, // Different payment!
+        planId,
+        captureId,
+        captureAmount: 200.00,
+        captureCurrency: 'USD',
+        expectedAmount: 200.00,
+        expectedCurrency: 'USD',
+        actor: 'Reconciliation Engine',
+        payerEmail: 'buyer@test.com',
+        rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+      });
+    },
+    /Reconciliation conflict: attempt .* belongs to payment/
+  );
+});
+
+// 4. Attempt with a mismatched PayPal order ID
+test('Reconciliation: Attempt with mismatched PayPal order ID fails', async () => {
+  await db.resetToSeed();
+  const planId = 'PLAN-2026-001';
+  const captureId = `CAP-TEST-${Date.now()}`;
+
+  // Create payment with order ID 1
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId1 = `ORD-TEST-1-${Date.now()}`;
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId: paypalOrderId1,
+    amount: 100.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  // Acquire lock
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId1, paymentId, 'instance-1', `CAP-${paypalOrderId1}`);
+  assert.ok(attemptId);
+
+  // Manually change the attempt's PayPal order ID to simulate mismatch
+  await query(
+    `UPDATE capture_attempts SET paypal_order_id = $1 WHERE id = $2;`,
+    [`ORD-TEST-2-${Date.now()}`, attemptId]
+  );
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId1}`, attemptId]
+  );
+
+  // Try to reconcile - should fail due to order ID mismatch
+  await assert.rejects(
+    async () => {
+      await db.settleReconciliationTransaction({
+        attemptId,
+        paymentId,
+        planId,
+        captureId,
+        captureAmount: 100.00,
+        captureCurrency: 'USD',
+        expectedAmount: 100.00,
+        expectedCurrency: 'USD',
+        actor: 'Reconciliation Engine',
+        payerEmail: 'buyer@test.com',
+        rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+      });
+    },
+    /Reconciliation conflict: attempt order ID .* does not match payment order ID/
+  );
+});
+
+// 5. Attempt with a conflicting stored capture ID
+test('Reconciliation: Attempt with conflicting stored capture ID fails', async () => {
+  await db.resetToSeed();
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId = `ORD-TEST-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const captureId1 = `CAP-FIRST-${Date.now()}`;
+  const captureId2 = `CAP-SECOND-${Date.now()}`;
+  const instanceId = `test-instance-1`;
+
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId,
+    amount: 100.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, instanceId, `CAP-${paypalOrderId}`);
+  assert.ok(attemptId);
+
+  // Manually set a different capture ID on the attempt
+  await query(
+    `UPDATE capture_attempts SET paypal_capture_id = $1 WHERE id = $2;`,
+    [captureId1, attemptId]
+  );
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId}`, attemptId]
+  );
+
+  // Try to reconcile with different capture ID - should fail
+  await assert.rejects(
+    async () => {
+      await db.settleReconciliationTransaction({
+        attemptId,
+        paymentId,
+        planId,
+        captureId: captureId2,
+        captureAmount: 100.00,
+        captureCurrency: 'USD',
+        expectedAmount: 100.00,
+        expectedCurrency: 'USD',
+        actor: 'Reconciliation Engine',
+        payerEmail: 'buyer@test.com',
+        rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId2 }
+      });
+    },
+    /Reconciliation conflict: attempt already has capture ID/
+  );
+});
+
+// 6. Two simultaneous reconciliation calls
+test('Reconciliation: Two simultaneous reconciliation calls - only one settles', async () => {
+  await db.resetToSeed();
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId = `ORD-TEST-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const captureId = `CAP-CONCURRENT-${Date.now()}`;
+
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId,
+    amount: 250.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, 'instance-1', `CAP-${paypalOrderId}`);
+  assert.ok(attemptId);
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId}`, attemptId]
+  );
+
+  // Two concurrent reconciliation attempts
+  const [result1, result2] = await Promise.allSettled([
+    db.settleReconciliationTransaction({
+      attemptId,
+      paymentId,
+      planId,
+      captureId,
+      captureAmount: 250.00,
+      captureCurrency: 'USD',
+      expectedAmount: 250.00,
+      expectedCurrency: 'USD',
+      actor: 'Reconciliation Engine 1',
+      payerEmail: 'buyer@test.com',
+      rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+    }),
+    db.settleReconciliationTransaction({
+      attemptId,
+      paymentId,
+      planId,
+      captureId,
+      captureAmount: 250.00,
+      captureCurrency: 'USD',
+      expectedAmount: 250.00,
+      expectedCurrency: 'USD',
+      actor: 'Reconciliation Engine 2',
+      payerEmail: 'buyer@test.com',
+      rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+    })
+  ]);
+
+  // At least one should succeed (idempotent), neither should produce inconsistent state
+  const successCount = [result1, result2].filter(r => r.status === 'fulfilled').length;
+  assert.ok(successCount >= 1, 'At least one reconciliation should succeed');
+
+  // Verify final state is consistent
+  const payment = await db.getPayment(paymentId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.equal(payment?.paypalCaptureId, captureId);
+
+  // Budget should only be spent once
+  const budget = await db.getBudget();
+  assert.equal(budget.spentAmount, 1450.00, 'Budget should be 1200 + 250 = 1450');
+
+  // Only one audit log
+  const auditLogs = await db.getAuditLogs();
+  const captureLogs = auditLogs.filter((l: any) => l.action === 'CAPTURE_PAYPAL_ORDER_RECONCILIATION' && l.details?.captureId === captureId);
+  assert.equal(captureLogs.length, 1, 'Should have exactly one reconciliation audit log');
+});
+
+// 7. Reconciliation after a stale worker attempts settlement
+test('Reconciliation: After stale worker fails, fresh reconciliation succeeds', async () => {
+  await db.resetToSeed();
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId = `ORD-TEST-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const staleInstanceId = `stale-instance-1`;
+  const newInstanceId = `new-instance-2`;
+
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId,
+    amount: 100.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  // Stale instance acquires lock
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, staleInstanceId, `CAP-${paypalOrderId}`);
+  assert.ok(attemptId);
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId}`, attemptId]
+  );
+
+  // New instance gets RECONCILE marker
+  const reconcileMarker = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, newInstanceId, `CAP-${paypalOrderId}`);
+  assert.ok(reconcileMarker?.startsWith('RECONCILE:'));
+
+  // New instance forces new attempt
+  const newAttemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, newInstanceId, `CAP-${paypalOrderId}`, true);
+  assert.ok(newAttemptId);
+  assert.notEqual(newAttemptId, attemptId);
+
+  // Stale worker tries to settle using old attempt via settleCaptureTransaction (checks lease ownership)
+  await assert.rejects(
+    async () => {
+      await db.settleCaptureTransaction({
+        attemptId, // OLD attempt ID (now SUPERSEDED)
+        paymentId,
+        planId,
+        captureId: `CAP-STALE-${Date.now()}`,
+        amount: 100.00,
+        currency: 'USD',
+        actor: 'Stale Worker',
+        payerEmail: 'buyer@test.com',
+        rawPaypalResponse: {},
+        instanceId: staleInstanceId
+      });
+    },
+    /not in CAPTURING state/
+  );
+
+  // Now reconcile with the NEW attempt - should succeed
+  await db.settleReconciliationTransaction({
+    attemptId: newAttemptId,
+    paymentId,
+    planId,
+    captureId: `CAP-FRESH-${Date.now()}`,
+    captureAmount: 100.00,
+    captureCurrency: 'USD',
+    expectedAmount: 100.00,
+    expectedCurrency: 'USD',
+    actor: 'Fresh Reconciliation',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED' }
+  });
+
+  // Verify payment completed successfully
+  const payment = await db.getPayment(paymentId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.ok(payment?.paypalCaptureId?.startsWith('CAP-FRESH-'));
+
+  // Old attempt should be SUPERSEDED
+  const oldAttempt = await query(`SELECT status FROM capture_attempts WHERE id = $1;`, [attemptId]);
+  assert.equal(oldAttempt.rows[0]?.status, 'SUPERSEDED');
+
+  // New attempt should be COMPLETED
+  const newAttempt = await query(`SELECT status FROM capture_attempts WHERE id = $1;`, [newAttemptId]);
+  assert.equal(newAttempt.rows[0]?.status, 'COMPLETED');
+});
+
+// 8. Repeated reconciliation does not increment budget or duplicate audit entries
+test('Reconciliation: Repeated reconciliation is idempotent - no budget increment or audit duplication', async () => {
+  await db.resetToSeed();
+  const paymentId = `PAY-TEST-${Date.now()}`;
+  const paypalOrderId = `ORD-TEST-${Date.now()}`;
+  const planId = 'PLAN-2026-001';
+  const captureId = `CAP-IDEMPOTENT-${Date.now()}`;
+  const instanceId = `test-instance-1`;
+
+  await db.savePayment({
+    id: paymentId,
+    purchasePlanId: planId,
+    planVersion: 1,
+    paypalOrderId,
+    amount: 300.00,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const attemptId = await db.tryAcquireCaptureLock(paypalOrderId, paymentId, instanceId, `CAP-${paypalOrderId}`);
+  assert.ok(attemptId);
+
+  // Add PayPal request ID and expire lease
+  await query(
+    `UPDATE capture_attempts SET paypal_request_id = $1, lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $2;`,
+    [`CAP-${paypalOrderId}`, attemptId]
+  );
+
+  // First reconciliation
+  await db.settleReconciliationTransaction({
+    attemptId,
+    paymentId,
+    planId,
+    captureId,
+    captureAmount: 300.00,
+    captureCurrency: 'USD',
+    expectedAmount: 300.00,
+    expectedCurrency: 'USD',
+    actor: 'Reconciliation Engine 1',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+  });
+
+  const budgetAfterFirst = await db.getBudget();
+  const auditLogsAfterFirst = await db.getAuditLogs();
+  const captureLogsAfterFirst = auditLogsAfterFirst.filter((l: any) => l.action === 'CAPTURE_PAYPAL_ORDER_RECONCILIATION' && l.details?.captureId === captureId);
+
+  // Second reconciliation (idempotent)
+  await db.settleReconciliationTransaction({
+    attemptId,
+    paymentId,
+    planId,
+    captureId,
+    captureAmount: 300.00,
+    captureCurrency: 'USD',
+    expectedAmount: 300.00,
+    expectedCurrency: 'USD',
+    actor: 'Reconciliation Engine 2',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+  });
+
+  // Third reconciliation (idempotent)
+  await db.settleReconciliationTransaction({
+    attemptId,
+    paymentId,
+    planId,
+    captureId,
+    captureAmount: 300.00,
+    captureCurrency: 'USD',
+    expectedAmount: 300.00,
+    expectedCurrency: 'USD',
+    actor: 'Reconciliation Engine 3',
+    payerEmail: 'buyer@test.com',
+    rawPaypalResponse: { status: 'COMPLETED', capture_id: captureId }
+  });
+
+  const budgetAfterThird = await db.getBudget();
+  const auditLogsAfterThird = await db.getAuditLogs();
+  const captureLogsAfterThird = auditLogsAfterThird.filter((l: any) => l.action === 'CAPTURE_PAYPAL_ORDER_RECONCILIATION' && l.details?.captureId === captureId);
+
+  // Budget should only be incremented once
+  assert.equal(budgetAfterThird.spentAmount, budgetAfterFirst.spentAmount, 'Budget should not increment on repeated reconciliation');
+
+  // Audit logs should not be duplicated
+  assert.equal(captureLogsAfterThird.length, captureLogsAfterFirst.length, 'Audit logs should not duplicate on repeated reconciliation');
+  assert.equal(captureLogsAfterThird.length, 1, 'Should have exactly one audit log');
+
+  // Payment should remain COMPLETED
+  const payment = await db.getPayment(paymentId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.equal(payment?.paypalCaptureId, captureId);
+});

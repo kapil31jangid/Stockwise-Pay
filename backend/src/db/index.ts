@@ -1990,6 +1990,11 @@ class DatabaseStore {
     }): Promise<{ payment: PaymentRecord; budget: BudgetConfigRecord }> {
       const { attemptId, paymentId, planId, captureId, captureAmount, captureCurrency, expectedAmount, expectedCurrency, actor, payerEmail, rawPaypalResponse } = params;
 
+      // Validate captureId early - it's required for audit log in both paths
+      if (!captureId || typeof captureId !== 'string' || captureId.trim() === '') {
+        throw new Error(`Reconciliation settlement failed: Capture ID is required (received: ${JSON.stringify(captureId)})`);
+      }
+
       if (this.pgPool) {
         const client = await this.pgPool.connect();
         try {
@@ -1997,7 +2002,7 @@ class DatabaseStore {
 
           // 1. Lock and verify payment record FIRST (for idempotency)
           const payRes = await client.query(
-            `SELECT id, verified_status AS "verifiedStatus", amount::float, currency, paypal_order_id FROM payments WHERE id = $1 FOR UPDATE;`,
+            `SELECT id, verified_status AS "verifiedStatus", amount::float, currency, paypal_order_id, paypal_capture_id, purchase_plan_id FROM payments WHERE id = $1 FOR UPDATE;`,
             [paymentId]
           );
           if (payRes.rows.length === 0) {
@@ -2005,24 +2010,48 @@ class DatabaseStore {
           }
           const payment = payRes.rows[0];
           if (payment.verifiedStatus === 'COMPLETED') {
-            // Idempotent: payment already settled, verify attempt state and return success
+            // Idempotent: payment already settled - verify identities match before returning success
             const attemptCheck = await client.query(
-              `SELECT status FROM capture_attempts WHERE id = $1;`,
+              `SELECT id, status, payment_id, paypal_order_id, paypal_capture_id FROM capture_attempts WHERE id = $1 FOR UPDATE;`,
               [attemptId]
             );
-            if (attemptCheck.rows.length > 0) {
-              const attemptStatus = attemptCheck.rows[0].status;
-              if (attemptStatus === 'CAPTURING') {
-                // Mark attempt as COMPLETED to keep in sync
-                await client.query(
-                  `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
-                  [captureId, attemptId]
-                );
-              } else if (attemptStatus !== 'COMPLETED') {
-                // Attempt is in unexpected state (FAILED, SUPERSEDED) but payment is COMPLETED
-                // This is an inconsistent state, but we don't fail - payment is the source of truth
-              }
+            if (attemptCheck.rows.length === 0) {
+              throw new Error(`Capture attempt ${attemptId} not found during idempotent reconciliation.`);
             }
+            const attempt = attemptCheck.rows[0];
+
+            // Verify attempt belongs to this payment
+            if (attempt.payment_id !== paymentId) {
+              throw new Error(`Reconciliation conflict: attempt ${attemptId} belongs to payment ${attempt.payment_id}, not ${paymentId}.`);
+            }
+
+            // Verify attempt's PayPal order ID matches payment's PayPal order ID
+            if (attempt.paypal_order_id !== payment.paypal_order_id) {
+              throw new Error(`Reconciliation conflict: attempt ${attemptId} order ID ${attempt.paypal_order_id} does not match payment order ID ${payment.paypal_order_id}.`);
+            }
+
+            // Verify incoming capture ID matches payment's already-stored capture ID
+            if (payment.paypal_capture_id && payment.paypal_capture_id !== captureId) {
+              throw new Error(`Reconciliation conflict: payment already has capture ID ${payment.paypal_capture_id}, cannot overwrite with ${captureId}.`);
+            }
+
+            // Verify attempt's stored capture ID is consistent (if present)
+            if (attempt.paypal_capture_id && attempt.paypal_capture_id !== captureId) {
+              throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypal_capture_id}, cannot overwrite with ${captureId}.`);
+            }
+
+            // Only mark attempt as COMPLETED if it was in a reconcilable state
+            if (attempt.status === 'CAPTURING' || attempt.status === 'SUPERSEDED') {
+              await client.query(
+                `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
+                [captureId, attemptId]
+              );
+            } else if (attempt.status !== 'COMPLETED') {
+              // Attempt is in unexpected state (FAILED) but payment is COMPLETED
+              // This is an inconsistent state - fail closed
+              throw new Error(`Reconciliation conflict: attempt ${attemptId} is in non-reconcilable state ${attempt.status} while payment is COMPLETED.`);
+            }
+
             await client.query('COMMIT;');
             return { payment: { ...payment, paypalCaptureId: captureId, verifiedStatus: 'COMPLETED' } as PaymentRecord, budget: await this.getBudget() };
           }
@@ -2030,7 +2059,7 @@ class DatabaseStore {
           // 2. Lock and verify capture attempt - FOR UPDATE to prevent concurrent settlement
           // We verify the attempt belongs to this payment and PayPal order
           const attemptRes = await client.query(
-            `SELECT id, status, payment_id, paypal_order_id FROM capture_attempts WHERE id = $1 FOR UPDATE;`,
+            `SELECT id, status, payment_id, paypal_order_id, paypal_capture_id FROM capture_attempts WHERE id = $1 FOR UPDATE;`,
             [attemptId]
           );
           if (attemptRes.rows.length === 0) {
@@ -2038,10 +2067,20 @@ class DatabaseStore {
           }
           const attempt = attemptRes.rows[0];
           if (attempt.payment_id !== paymentId) {
-            throw new Error(`Capture attempt ${attemptId} does not belong to payment ${paymentId}.`);
+            throw new Error(`Reconciliation conflict: attempt ${attemptId} belongs to payment ${attempt.payment_id}, not ${paymentId}.`);
           }
           if (attempt.status !== 'CAPTURING' && attempt.status !== 'SUPERSEDED') {
             throw new Error(`Capture attempt ${attemptId} is not in a reconcilable state (current: ${attempt.status}).`);
+          }
+
+          // 2b. Verify attempt's PayPal order ID matches payment's PayPal order ID
+          if (attempt.paypal_order_id !== payment.paypal_order_id) {
+            throw new Error(`Reconciliation conflict: attempt order ID ${attempt.paypal_order_id} does not match payment order ID ${payment.paypal_order_id}.`);
+          }
+
+          // 2c. Verify attempt's stored capture ID is consistent (if present) - non-idempotent path
+          if (attempt.paypal_capture_id && attempt.paypal_capture_id !== captureId) {
+            throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypal_capture_id}, cannot overwrite with ${captureId}.`);
           }
 
           // 3. Validate ACTUAL PayPal capture amount and currency against database payment
@@ -2059,6 +2098,11 @@ class DatabaseStore {
           }
           if (expectedCurrency !== captureCurrency) {
             throw new Error(`Reconciliation settlement failed: Capture currency mismatch (database payment: ${expectedCurrency}, PayPal capture: ${captureCurrency}).`);
+          }
+
+          // 3b. Verify plan ID matches payment's plan
+          if (payment.purchase_plan_id !== planId) {
+            throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchase_plan_id}, not ${planId}.`);
           }
 
           // 4. Lock and verify budget record to prevent double-spending
@@ -2155,7 +2199,49 @@ class DatabaseStore {
       if (payIdx < 0) throw new Error(`Payment record ${paymentId} not found.`);
       const payment = this.state.payments[payIdx];
       if (payment.verifiedStatus === 'COMPLETED') {
-        // Idempotent
+        // Idempotent: payment already settled - verify identities match before returning success
+        const attemptIdx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
+        if (attemptIdx === undefined || attemptIdx < 0) {
+          throw new Error(`Capture attempt ${attemptId} not found during idempotent reconciliation.`);
+        }
+        const attempt = this.state.captureAttempts[attemptIdx];
+
+        // Verify attempt belongs to this payment
+        if (attempt.paymentId !== paymentId) {
+          throw new Error(`Reconciliation conflict: attempt ${attemptId} belongs to payment ${attempt.paymentId}, not ${paymentId}.`);
+        }
+
+        // Verify attempt's PayPal order ID matches payment's PayPal order ID
+        if (attempt.paypalOrderId !== payment.paypalOrderId) {
+          throw new Error(`Reconciliation conflict: attempt ${attemptId} order ID ${attempt.paypalOrderId} does not match payment order ID ${payment.paypalOrderId}.`);
+        }
+
+        // Verify incoming capture ID matches payment's already-stored capture ID
+        if (payment.paypalCaptureId && payment.paypalCaptureId !== captureId) {
+          throw new Error(`Reconciliation conflict: payment already has capture ID ${payment.paypalCaptureId}, cannot overwrite with ${captureId}.`);
+        }
+
+        // Verify attempt's stored capture ID is consistent (if present)
+        if (attempt.paypalCaptureId && attempt.paypalCaptureId !== captureId) {
+          throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypalCaptureId}, cannot overwrite with ${captureId}.`);
+        }
+
+        // Verify plan ID matches payment's plan
+        if (payment.purchasePlanId !== planId) {
+          throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchasePlanId}, not ${planId}.`);
+        }
+
+        // Only mark attempt as COMPLETED if it was in a reconcilable state
+        if (attempt.status === 'CAPTURING' || attempt.status === 'SUPERSEDED') {
+          attempt.status = 'COMPLETED';
+          attempt.paypalCaptureId = captureId;
+          attempt.completedAt = new Date().toISOString();
+          attempt.leaseExpiresAt = null;
+          attempt.leaseOwner = null;
+        } else if (attempt.status !== 'COMPLETED') {
+          throw new Error(`Reconciliation conflict: attempt ${attemptId} is in non-reconcilable state ${attempt.status} while payment is COMPLETED.`);
+        }
+
         return { payment, budget: this.state.budget };
       }
 
@@ -2171,6 +2257,20 @@ class DatabaseStore {
       }
       if (expectedCurrency !== captureCurrency) {
         throw new Error(`Reconciliation settlement failed: Capture currency mismatch (database payment: ${expectedCurrency}, PayPal capture: ${captureCurrency}).`);
+      }
+
+      // 3b. Verify plan ID matches payment's plan
+      if (payment.purchasePlanId !== planId) {
+        throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchasePlanId}, not ${planId}.`);
+      }
+
+      // 3c. Verify attempt's stored capture ID is consistent (if present) - non-idempotent path
+      const attemptIdx2 = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
+      if (attemptIdx2 !== undefined && attemptIdx2 >= 0) {
+        const attempt = this.state.captureAttempts[attemptIdx2];
+        if (attempt.paypalCaptureId && attempt.paypalCaptureId !== captureId) {
+          throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypalCaptureId}, cannot overwrite with ${captureId}.`);
+        }
       }
 
       const currentBudget = this.state.budget;
@@ -2194,6 +2294,10 @@ class DatabaseStore {
 
       this.state.budget.spentAmount = newSpent;
       this.state.budget.allocatedAmount = Math.max(0, Number((currentBudget.allocatedAmount - captureAmount).toFixed(2)));
+
+      if (!captureId || typeof captureId !== 'string' || captureId.trim() === '') {
+        throw new Error('Reconciliation settlement failed: Capture ID is required for audit log.');
+      }
 
       this.state.auditLogs.unshift({
         id: `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
