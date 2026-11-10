@@ -99,7 +99,7 @@ export const SEED_USERS: UserRecord[] = [
   }
 ];
 
-class DatabaseStore {
+export class DatabaseStore {
   private state: DatabaseState;
   private pgPool: pg.Pool | null = null;
   public isPostgres: boolean = false;
@@ -2311,13 +2311,30 @@ class DatabaseStore {
         throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchasePlanId}, not ${planId}.`);
       }
 
-      // 3c. Verify attempt's stored capture ID is consistent (if present) - non-idempotent path
+      // 3c. A reconciliation settlement must always have a corresponding capture attempt.
+      // Keep this equivalent to the PostgreSQL FOR UPDATE path and fail closed when
+      // the attempt cannot establish payment/order/state identity.
       const attemptIdx2 = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
-      if (attemptIdx2 !== undefined && attemptIdx2 >= 0) {
-        const attempt = this.state.captureAttempts[attemptIdx2];
-        if (attempt.paypalCaptureId && attempt.paypalCaptureId !== captureId) {
-          throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypalCaptureId}, cannot overwrite with ${captureId}.`);
-        }
+      if (attemptIdx2 === undefined || attemptIdx2 < 0) {
+        throw new Error(`Capture attempt ${attemptId} not found.`);
+      }
+      const attempt = this.state.captureAttempts[attemptIdx2];
+      if (attempt.paymentId !== paymentId) {
+        throw new Error(`Reconciliation conflict: attempt ${attemptId} belongs to payment ${attempt.paymentId}, not ${paymentId}.`);
+      }
+      if (attempt.paypalOrderId !== payment.paypalOrderId) {
+        throw new Error(`Reconciliation conflict: attempt order ID ${attempt.paypalOrderId} does not match payment order ID ${payment.paypalOrderId}.`);
+      }
+      if (attempt.status !== 'CAPTURING' && attempt.status !== 'SUPERSEDED') {
+        throw new Error(`Capture attempt ${attemptId} is not in a reconcilable state (current: ${attempt.status}).`);
+      }
+      if (attempt.paypalCaptureId && attempt.paypalCaptureId !== captureId) {
+        throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypalCaptureId}, cannot overwrite with ${captureId}.`);
+      }
+
+      const plan = this.state.purchasePlans.find(p => p.id === planId);
+      if (!plan) {
+        throw new Error(`Purchase plan ${planId} not found.`);
       }
 
       const currentBudget = this.state.budget;
@@ -2336,8 +2353,7 @@ class DatabaseStore {
       };
       this.state.payments[payIdx] = updatedPayment;
 
-      const plan = this.state.purchasePlans.find(p => p.id === planId);
-      if (plan) plan.planStatus = 'paid';
+      plan.planStatus = 'paid';
 
       this.state.budget.spentAmount = newSpent;
       this.state.budget.allocatedAmount = Math.max(0, Number((currentBudget.allocatedAmount - captureAmount).toFixed(2)));
@@ -2359,14 +2375,11 @@ class DatabaseStore {
       });
 
       // Update local capture attempt
-      const attemptIdx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
-      if (attemptIdx !== undefined && attemptIdx >= 0) {
-        this.state.captureAttempts[attemptIdx].status = 'COMPLETED';
-        this.state.captureAttempts[attemptIdx].paypalCaptureId = captureId;
-        this.state.captureAttempts[attemptIdx].completedAt = new Date().toISOString();
-        this.state.captureAttempts[attemptIdx].leaseExpiresAt = null;
-        this.state.captureAttempts[attemptIdx].leaseOwner = null;
-      }
+      attempt.status = 'COMPLETED';
+      attempt.paypalCaptureId = captureId;
+      attempt.completedAt = new Date().toISOString();
+      attempt.leaseExpiresAt = null;
+      attempt.leaseOwner = null;
 
       this.save();
       return { payment: updatedPayment, budget: this.state.budget };

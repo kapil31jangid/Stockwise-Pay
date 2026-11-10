@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { db, query } from '../src/db/index.js';
+import { db, DatabaseStore, query } from '../src/db/index.js';
 import { paypalService } from '../src/services/paypal.js';
 import { signAuthToken } from '../src/middleware/auth.js';
 import { fileURLToPath } from 'url';
@@ -16,6 +16,16 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const schemaPath = join(__dirname, '../src/db/schema.sql');
+
+async function createLocalStore(): Promise<DatabaseStore> {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  const localStore = new DatabaseStore();
+  if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = previousDatabaseUrl;
+  await localStore.resetToSeed();
+  return localStore;
+}
 
 const approverToken = signAuthToken({
   id: 'USR-001',
@@ -3339,4 +3349,150 @@ test('Reconciliation: Audit records are not duplicated on repeated reconciliatio
   // Audit logs should not be duplicated
   assert.equal(captureLogsAfterSecond.length, captureLogsAfterFirst.length);
   assert.equal(captureLogsAfterSecond.length, 0, 'Idempotent reconciliation must not add an audit log');
+});
+
+test('In-memory reconciliation fails closed when the capture attempt is missing', async () => {
+  const localDb = await createLocalStore();
+  const paymentId = `LOCAL-PAY-${Date.now()}`;
+  const orderId = `LOCAL-ORDER-${Date.now()}`;
+  const captureId = `LOCAL-CAP-${Date.now()}`;
+  await localDb.savePayment({
+    id: paymentId,
+    purchasePlanId: 'PLAN-2026-001',
+    planVersion: 1,
+    paypalOrderId: orderId,
+    amount: 100,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox (Simulated)',
+    verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  await assert.rejects(
+    localDb.settleReconciliationTransaction({
+      attemptId: 'MISSING-ATTEMPT', paymentId, planId: 'PLAN-2026-001', captureId,
+      captureAmount: 100, captureCurrency: 'USD', expectedAmount: 100, expectedCurrency: 'USD',
+      actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+    }),
+    /Capture attempt MISSING-ATTEMPT not found/
+  );
+  assert.equal((await localDb.getPayment(paymentId))?.verifiedStatus, 'CREATED');
+  assert.equal((await localDb.getBudget()).spentAmount, 1200);
+});
+
+test('In-memory reconciliation rejects attempt/payment and PayPal-order mismatches', async () => {
+  const localDb = await createLocalStore();
+  const paymentId = `LOCAL-PAY-${Date.now()}`;
+  const otherPaymentId = `LOCAL-OTHER-${Date.now()}`;
+  const orderId = `LOCAL-ORDER-${Date.now()}`;
+  const otherOrderId = `LOCAL-OTHER-ORDER-${Date.now()}`;
+  const captureId = `LOCAL-CAP-${Date.now()}`;
+  const payment = {
+    id: paymentId, purchasePlanId: 'PLAN-2026-001', planVersion: 1, paypalOrderId: orderId,
+    amount: 100, currency: 'USD', paymentMethod: 'PayPal Sandbox (Simulated)' as const,
+    verifiedStatus: 'CREATED' as const, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  await localDb.savePayment(payment);
+  await localDb.savePayment({ ...payment, id: otherPaymentId, paypalOrderId: otherOrderId });
+
+  const attemptId = await localDb.tryAcquireCaptureLock(orderId, paymentId, 'local-owner', `CAP-${orderId}`);
+  assert.ok(attemptId);
+  await assert.rejects(
+    localDb.settleReconciliationTransaction({
+      attemptId, paymentId: otherPaymentId, planId: 'PLAN-2026-001', captureId,
+      captureAmount: 100, captureCurrency: 'USD', expectedAmount: 100, expectedCurrency: 'USD',
+      actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+    }),
+    /belongs to payment/
+  );
+
+  (localDb as any).state.captureAttempts.find((entry: any) => entry.id === attemptId).paypalOrderId = otherOrderId;
+  await assert.rejects(
+    localDb.settleReconciliationTransaction({
+      attemptId, paymentId, planId: 'PLAN-2026-001', captureId,
+      captureAmount: 100, captureCurrency: 'USD', expectedAmount: 100, expectedCurrency: 'USD',
+      actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+    }),
+    /not found|order ID/
+  );
+});
+
+test('In-memory reconciliation rejects invalid attempt state and conflicting capture ID', async () => {
+  const localDb = await createLocalStore();
+  const paymentId = `LOCAL-PAY-${Date.now()}`;
+  const orderId = `LOCAL-ORDER-${Date.now()}`;
+  const captureId = `LOCAL-CAP-${Date.now()}`;
+  await localDb.savePayment({
+    id: paymentId, purchasePlanId: 'PLAN-2026-001', planVersion: 1, paypalOrderId: orderId,
+    amount: 100, currency: 'USD', paymentMethod: 'PayPal Sandbox (Simulated)', verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  });
+  const attemptId = await localDb.tryAcquireCaptureLock(orderId, paymentId, 'local-owner', `CAP-${orderId}`);
+  assert.ok(attemptId);
+  const state = (localDb as any).state;
+  const attempt = state.captureAttempts.find((entry: any) => entry.id === attemptId);
+  attempt.status = 'FAILED';
+  await assert.rejects(
+    localDb.settleReconciliationTransaction({
+      attemptId, paymentId, planId: 'PLAN-2026-001', captureId,
+      captureAmount: 100, captureCurrency: 'USD', expectedAmount: 100, expectedCurrency: 'USD',
+      actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+    }),
+    /not in a reconcilable state/
+  );
+
+  attempt.status = 'CAPTURING';
+  attempt.paypalCaptureId = 'LOCAL-OTHER-CAPTURE';
+  await assert.rejects(
+    localDb.settleReconciliationTransaction({
+      attemptId, paymentId, planId: 'PLAN-2026-001', captureId,
+      captureAmount: 100, captureCurrency: 'USD', expectedAmount: 100, expectedCurrency: 'USD',
+      actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+    }),
+    /already has capture ID/
+  );
+});
+
+test('In-memory valid reconciliation is idempotent and rolls back failed validation', async () => {
+  const localDb = await createLocalStore();
+  const paymentId = `LOCAL-PAY-${Date.now()}`;
+  const orderId = `LOCAL-ORDER-${Date.now()}`;
+  const captureId = `LOCAL-CAP-${Date.now()}`;
+  await localDb.savePayment({
+    id: paymentId, purchasePlanId: 'PLAN-2026-001', planVersion: 1, paypalOrderId: orderId,
+    amount: 125, currency: 'USD', paymentMethod: 'PayPal Sandbox (Simulated)', verifiedStatus: 'CREATED',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  });
+  const attemptId = await localDb.tryAcquireCaptureLock(orderId, paymentId, 'local-owner', `CAP-${orderId}`);
+  assert.ok(attemptId);
+  const budgetBefore = await localDb.getBudget();
+  const logsBefore = (await localDb.getAuditLogs()).length;
+
+  await assert.rejects(
+    localDb.settleReconciliationTransaction({
+      attemptId, paymentId, planId: 'PLAN-2026-001', captureId,
+      captureAmount: 126, captureCurrency: 'USD', expectedAmount: 125, expectedCurrency: 'USD',
+      actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+    }),
+    /Capture amount mismatch/
+  );
+  assert.equal((await localDb.getPayment(paymentId))?.verifiedStatus, 'CREATED');
+  assert.deepEqual(await localDb.getBudget(), budgetBefore);
+  assert.equal((await localDb.getAuditLogs()).length, logsBefore);
+
+  await localDb.settleReconciliationTransaction({
+    attemptId, paymentId, planId: 'PLAN-2026-001', captureId,
+    captureAmount: 125, captureCurrency: 'USD', expectedAmount: 125, expectedCurrency: 'USD',
+    actor: 'Test', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+  });
+  const afterFirst = await localDb.getBudget();
+  const logsAfterFirst = await localDb.getAuditLogs();
+  await localDb.settleReconciliationTransaction({
+    attemptId, paymentId, planId: 'PLAN-2026-001', captureId,
+    captureAmount: 125, captureCurrency: 'USD', expectedAmount: 125, expectedCurrency: 'USD',
+    actor: 'Test Retry', payerEmail: 'buyer@test.com', rawPaypalResponse: { status: 'COMPLETED' }
+  });
+  assert.deepEqual(await localDb.getBudget(), afterFirst);
+  assert.equal((await localDb.getAuditLogs()).length, logsAfterFirst.length);
 });
