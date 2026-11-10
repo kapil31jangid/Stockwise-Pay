@@ -3,9 +3,9 @@
 **Date:** November 10, 2026  
 **Auditor:** Principal Software Architect, Security & QA Engineering Team  
 **Repository:** https://github.com/kapil31jangid/Stockwise-Pay  
-**Latest Audited Implementation Commit:** `a323824026b5cdeeb8f8a49cb6f39f742820dc01`  
-**Documentation Update:** Pending commit after verification  
-**Final Decision:** `NOT READY — CI AND POSTGRESQL MIGRATION EVIDENCE PENDING`
+**Latest Verified Implementation Commit:** `10e8dce8347be3fe52f854d1006098e9b83f0957`  
+**GitHub Actions:** [Run 42797402565](https://github.com/kapil31jangid/Stockwise-Pay/actions/runs/42797402565) — **passed**  
+**Final Decision:** `NOT READY — REAL PAYPAL SANDBOX TRANSACTION NOT EVIDENCED`
 
 ---
 
@@ -26,7 +26,7 @@ CSV Inventory Import (Elena - Buyer)
   ➔ PostgreSQL Immutable Audit Trail & Double-Entry Ledger Logging
 ```
 
-The current local verification run passed 135 tests: 7 intelligence, 13 supplier-intelligence, and 115 backend tests, including 66 PostgreSQL-backed reconciliation regression tests. Backend and frontend builds also passed. Fresh/legacy PostgreSQL migration validation and GitHub Actions verification were not available in this Windows environment and are therefore not claimed as passed.
+The current local verification run passed 135 tests: 7 intelligence, 13 supplier-intelligence, and 115 backend tests, including 66 PostgreSQL-backed reconciliation regression tests. Backend and frontend builds, dependency scanning, fresh-schema validation, legacy-upgrade validation, and the complete GitHub Actions run also passed. PayPal capture paths remain automated test/demo fulfillment; no real Sandbox transaction is evidenced.
 
 ---
 
@@ -34,12 +34,12 @@ The current local verification run passed 135 tests: 7 intelligence, 13 supplier
 
 ```
 ================================================================================
-FINAL VERDICT: NOT READY — CI AND POSTGRESQL MIGRATION EVIDENCE PENDING
+FINAL VERDICT: NOT READY — REAL PAYPAL SANDBOX TRANSACTION NOT EVIDENCED
 ================================================================================
 ```
 
 ### Rationale:
-- **Sandbox Readiness:** Automated tests use mocked/test-mode PayPal fulfillment and a local PostgreSQL database. No real PayPal Sandbox transaction was independently executed or evidenced in this audit, so Sandbox readiness is not certified.
+- **Sandbox Readiness:** Automated tests use mocked/test-mode PayPal fulfillment and a local PostgreSQL database. The code is suitable for a separately controlled Sandbox demonstration, but no real PayPal Sandbox transaction was independently executed or evidenced in this audit.
 - **Production Pre-requisites:** Prior to processing real customer funds, the team must configure live PayPal production credentials, register an HTTPS webhook endpoint with PayPal Developer Portal, and configure production TLS certificates.
 
 ---
@@ -112,7 +112,10 @@ The following results are from the local workspace on November 10, 2026. PayPal 
 |---|---|---|---|
 | **Backend Build** | `npm --prefix backend run build` | **EXIT 0** | Clean TypeScript compilation to `dist/` |
 | **Frontend Next.js Build** | `npm --prefix frontend run build` | **EXIT 0** | 11/11 static pages prerendered, all chunks optimized |
-| **Frontend Code Quality** | `npm --prefix frontend run lint` | **EXIT 0** | ESLint verified across all routes and components |
+| **Frontend Code Quality** | `npm --prefix frontend run lint` | **EXIT 0** | ESLint verified across all routes and components; warnings only |
+| **Fresh PostgreSQL schema** | CI `psql -v ON_ERROR_STOP=1` validation | **PASS** | Run 42797402565 |
+| **Legacy PostgreSQL upgrade** | CI legacy fixture + idempotent upgrade validation | **PASS** | Existing records and required constraints preserved |
+| **Dependency vulnerability audit** | `npm audit --audit-level=critical` | **PASS** | 0 vulnerabilities |
 
 ### 4.3 Sandbox Integration Evidence
 No real PayPal Sandbox transaction evidence was produced during this audit. The backend output explicitly identifies its PayPal fulfillment as automated test/demo mode.
@@ -215,7 +218,7 @@ The following findings were identified and remediated in the final patch release
 
 ## 7. Test Suite Execution & Verification Evidence (Post-Patch)
 
-*Local verification executed on November 10, 2026 against the local PostgreSQL-backed test path. PayPal tests used automated test/demo fulfillment and mocked reconciliation responses; no real Sandbox transaction is claimed.*
+*Local verification executed on November 10, 2026 against the local PostgreSQL-backed test path. GitHub Actions run 42797402565 independently verified the PostgreSQL migrations and full CI pipeline. PayPal tests used automated test/demo fulfillment and mocked reconciliation responses; no real Sandbox transaction is claimed.*
 
 ### 7.1 Unit & Integration Test Summary
 | Suite | Command | Total | Passed | Failed | Skipped | Duration |
@@ -267,14 +270,14 @@ No real PayPal Sandbox transaction was independently executed or evidenced in th
 - [x] Cryptographic JWT signature, expiration, and header verification active.
 - [x] Persistent session and token revocation enabled via `revoked_tokens` table.
 - [x] Fail-closed authentication active when database connection fails.
-- [ ] Fresh PostgreSQL schema validation executed in this environment (psql unavailable).
-- [ ] Legacy PostgreSQL upgrade validation executed in this environment (psql unavailable).
+- [x] Fresh PostgreSQL schema validation passed in GitHub Actions.
+- [x] Legacy PostgreSQL upgrade validation passed in GitHub Actions.
 - [x] Manager approval required prior to PayPal order creation; modifications invalidate approval.
 - [x] In-flight mutual-exclusion capture lock active on PayPal captures (distributed via `capture_attempts` table with lease/heartbeat).
 - [x] PayPal webhook signature verification and duplicate event rejection active using `event.id`.
 - [x] Role-Based Access Control verified (Buyer vs Approver vs Treasury).
 - [x] CI pipeline is configured with reproducible `npm ci`, migration validation, builds, tests, and blocking critical audit checks.
-- [ ] Latest GitHub Actions run independently verified.
+- [x] Latest GitHub Actions run independently verified: [42797402565](https://github.com/kapil31jangid/Stockwise-Pay/actions/runs/42797402565).
 - [ ] Configure production PayPal Live credentials (for real customer payments).
 - [ ] Register HTTPS production webhook URL in PayPal Developer Portal.
 
@@ -282,5 +285,5 @@ No real PayPal Sandbox transaction was independently executed or evidenced in th
 
 **Report Approved by:** Lead Application Security Architect & Full-Stack Engineering Team  
 **StockWise Pay Version:** 1.0.0-rc3  
-**Latest Audited Implementation Commit:** `a323824026b5cdeeb8f8a49cb6f39f742820dc01`
-**Verification Documentation Commit:** Pending commit after final verification
+**Latest Verified Implementation Commit:** `10e8dce8347be3fe52f854d1006098e9b83f0957`
+**GitHub Actions Run:** `42797402565` — PASS
