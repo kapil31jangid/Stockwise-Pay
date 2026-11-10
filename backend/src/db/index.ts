@@ -733,7 +733,8 @@ class DatabaseStore {
    * Reconcile a stale capture attempt with live PayPal state before takeover.
    * Performs actual PayPal API call to verify order state.
    * Returns ReconciliationResult with status and capture ID if completed.
-   * If PayPal reports COMPLETED, performs full idempotent financial settlement via settleCaptureTransaction.
+   * If PayPal reports COMPLETED, performs full idempotent financial settlement via settleReconciliationTransaction.
+   * Validates ACTUAL PayPal capture response (capture.id, capture.status, capture.amount.value, capture.amount.currency_code).
    * Never returns a RECONCILE marker - that is handled at the call site.
    * Fail closed when PayPal state is unavailable or ambiguous.
    */
@@ -790,18 +791,51 @@ class DatabaseStore {
             }
             const payment = paymentRes.rows[0];
 
-            // Perform full idempotent settlement (payment, budget, plan, audit, attempt)
-            await this.settleCaptureTransaction({
+            // --- Validate ACTUAL PayPal capture response fields ---
+            // 1. Require capture.id (already checked above)
+            // 2. Require capture.status === COMPLETED (already checked above)
+            // 3. Require capture.amount.value (must exist, be non-null, numeric, and finite)
+            const rawAmountValue = completedCapture.amount?.value;
+            if (rawAmountValue === undefined || rawAmountValue === null || rawAmountValue === '') {
+              return { status: 'FAILED', error: 'PayPal reconciliation failed: Missing capture amount value' };
+            }
+            const captureAmount = Number(rawAmountValue);
+            if (isNaN(captureAmount) || !isFinite(captureAmount)) {
+              return { status: 'FAILED', error: `PayPal reconciliation failed: Malformed or non-numeric capture amount value: "${rawAmountValue}"` };
+            }
+            // 4. Require capture.amount.currency_code (must exist, be non-null, non-empty string)
+            const captureCurrency = completedCapture.amount?.currency_code;
+            if (captureCurrency === undefined || captureCurrency === null || typeof captureCurrency !== 'string' || captureCurrency.trim() === '') {
+              return { status: 'FAILED', error: 'PayPal reconciliation failed: Missing or invalid capture currency code' };
+            }
+            // 5. Cross-validate with database payment (safe decimal comparison)
+            if (Math.abs(payment.amount - captureAmount) > 0.01) {
+              return { status: 'FAILED', error: `PayPal reconciliation failed: Amount mismatch (database payment: $${payment.amount}, PayPal capture: $${captureAmount.toFixed(2)})` };
+            }
+            if (payment.currency !== captureCurrency) {
+              return { status: 'FAILED', error: `PayPal reconciliation failed: Currency mismatch (database payment: ${payment.currency}, PayPal capture: ${captureCurrency})` };
+            }
+            // 6. Verify PayPal order ID matches
+            if (liveOrder.id !== paypalOrderId) {
+              return { status: 'FAILED', error: `PayPal reconciliation failed: Order ID mismatch (requested: ${paypalOrderId}, response: ${liveOrder.id})` };
+            }
+            // --- End validation ---
+
+            // Perform full idempotent settlement via dedicated reconciliation path
+            // Does NOT verify lease ownership - reconciliation is a separate trusted operation
+            await this.settleReconciliationTransaction({
               attemptId: existingAttemptId,
               paymentId: payment.id,
               planId: payment.purchase_plan_id,
               captureId: completedCapture.id,
-              amount: payment.amount,
-              currency: payment.currency,
+              captureAmount,
+              captureCurrency,
+              expectedAmount: payment.amount,
+              expectedCurrency: payment.currency,
               actor: 'PayPal Reconciliation Engine',
               payerEmail: payment.payer_email || liveOrder.payer?.email_address || 'buyer@stockwise.test',
-              rawPaypalResponse: liveOrder,
-              instanceId: 'reconciliation-engine' // Special instance ID for reconciliation
+              rawPaypalResponse: liveOrder
+              // No instanceId - reconciliation engine is a separate trusted actor
             });
 
             return { status: 'COMPLETED', captureId: completedCapture.id };
@@ -1928,6 +1962,265 @@ class DatabaseStore {
     return { payment: updatedPayment, budget: this.state.budget };
   }
 
+  /**
+   * Dedicated Reconciliation Settlement Transaction
+     * Used ONLY by reconciliation engine to settle already-captured PayPal orders.
+     * Does NOT verify lease ownership against original instance - the reconciliation
+     * engine is a separate trusted actor that has already verified the live PayPal state.
+     * Still enforces all financial validations: payment status, budget ceiling, plan existence,
+     * amount/currency match against ACTUAL PayPal capture response.
+     * Fail closed: rolls back all changes if any validation fails.
+     */
+    public async settleReconciliationTransaction(params: {
+      attemptId: string;
+      paymentId: string;
+      planId: string;
+      captureId: string;
+      // Actual capture amount and currency from PayPal response (NOT from database payment)
+      captureAmount: number;
+      captureCurrency: string;
+      // Database payment for cross-validation
+      expectedAmount: number;
+      expectedCurrency: string;
+      actor: string;
+      payerEmail: string;
+      rawPaypalResponse: any;
+      // Reconciliation engine does not impersonate original lease owner
+      // Lease ownership is NOT verified - reconciliation is a separate trusted operation
+    }): Promise<{ payment: PaymentRecord; budget: BudgetConfigRecord }> {
+      const { attemptId, paymentId, planId, captureId, captureAmount, captureCurrency, expectedAmount, expectedCurrency, actor, payerEmail, rawPaypalResponse } = params;
+
+      if (this.pgPool) {
+        const client = await this.pgPool.connect();
+        try {
+          await client.query('BEGIN;');
+
+          // 1. Lock and verify payment record FIRST (for idempotency)
+          const payRes = await client.query(
+            `SELECT id, verified_status AS "verifiedStatus", amount::float, currency, paypal_order_id FROM payments WHERE id = $1 FOR UPDATE;`,
+            [paymentId]
+          );
+          if (payRes.rows.length === 0) {
+            throw new Error(`Payment record ${paymentId} not found in database.`);
+          }
+          const payment = payRes.rows[0];
+          if (payment.verifiedStatus === 'COMPLETED') {
+            // Idempotent: payment already settled, verify attempt state and return success
+            const attemptCheck = await client.query(
+              `SELECT status FROM capture_attempts WHERE id = $1;`,
+              [attemptId]
+            );
+            if (attemptCheck.rows.length > 0) {
+              const attemptStatus = attemptCheck.rows[0].status;
+              if (attemptStatus === 'CAPTURING') {
+                // Mark attempt as COMPLETED to keep in sync
+                await client.query(
+                  `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
+                  [captureId, attemptId]
+                );
+              } else if (attemptStatus !== 'COMPLETED') {
+                // Attempt is in unexpected state (FAILED, SUPERSEDED) but payment is COMPLETED
+                // This is an inconsistent state, but we don't fail - payment is the source of truth
+              }
+            }
+            await client.query('COMMIT;');
+            return { payment: { ...payment, paypalCaptureId: captureId, verifiedStatus: 'COMPLETED' } as PaymentRecord, budget: await this.getBudget() };
+          }
+
+          // 2. Lock and verify capture attempt - FOR UPDATE to prevent concurrent settlement
+          // We verify the attempt belongs to this payment and PayPal order
+          const attemptRes = await client.query(
+            `SELECT id, status, payment_id, paypal_order_id FROM capture_attempts WHERE id = $1 FOR UPDATE;`,
+            [attemptId]
+          );
+          if (attemptRes.rows.length === 0) {
+            throw new Error(`Capture attempt ${attemptId} not found.`);
+          }
+          const attempt = attemptRes.rows[0];
+          if (attempt.payment_id !== paymentId) {
+            throw new Error(`Capture attempt ${attemptId} does not belong to payment ${paymentId}.`);
+          }
+          if (attempt.status !== 'CAPTURING' && attempt.status !== 'SUPERSEDED') {
+            throw new Error(`Capture attempt ${attemptId} is not in a reconcilable state (current: ${attempt.status}).`);
+          }
+
+          // 3. Validate ACTUAL PayPal capture amount and currency against database payment
+          // This is the critical fix: we validate the capture response, not pass DB amount as capture amount
+          // First validate that captureAmount is a valid finite number
+          if (captureAmount === undefined || captureAmount === null || isNaN(captureAmount) || !isFinite(captureAmount)) {
+            throw new Error(`Reconciliation settlement failed: Invalid capture amount (${captureAmount}).`);
+          }
+          // Validate that captureCurrency is a valid non-empty string
+          if (captureCurrency === undefined || captureCurrency === null || typeof captureCurrency !== 'string' || captureCurrency.trim() === '') {
+            throw new Error(`Reconciliation settlement failed: Invalid capture currency (${captureCurrency}).`);
+          }
+          if (Math.abs(expectedAmount - captureAmount) > 0.01) {
+            throw new Error(`Reconciliation settlement failed: Capture amount mismatch (database payment: $${expectedAmount}, PayPal capture: $${captureAmount}).`);
+          }
+          if (expectedCurrency !== captureCurrency) {
+            throw new Error(`Reconciliation settlement failed: Capture currency mismatch (database payment: ${expectedCurrency}, PayPal capture: ${captureCurrency}).`);
+          }
+
+          // 4. Lock and verify budget record to prevent double-spending
+          const budgetRes = await client.query(
+            `SELECT id, monthly_budget::float AS "monthlyBudget", spent_amount::float AS "spentAmount", allocated_amount::float AS "allocatedAmount" FROM budget_config LIMIT 1 FOR UPDATE;`
+          );
+          const currentBudget = budgetRes.rows[0] || { id: 'default', monthlyBudget: 5000, spentAmount: 0, allocatedAmount: 0 };
+          const budgetId = currentBudget.id || 'default';
+          const newSpent = Number((currentBudget.spentAmount + captureAmount).toFixed(2));
+          if (newSpent > currentBudget.monthlyBudget + 0.01) {
+            throw new Error(`Transaction rejected: Budget ceiling exceeded ($${newSpent.toFixed(2)} / $${currentBudget.monthlyBudget.toFixed(2)}).`);
+          }
+          const newAllocated = Math.max(0, Number((currentBudget.allocatedAmount - captureAmount).toFixed(2)));
+
+          // 5. Update budget
+          await client.query(
+            `UPDATE budget_config SET spent_amount = $1, allocated_amount = $2, updated_at = $3 WHERE id = $4;`,
+            [newSpent, newAllocated, new Date().toISOString(), budgetId]
+          );
+
+          // 6. Verify plan exists and update plan status to 'paid'
+          const planRes = await client.query(
+            `SELECT id FROM purchase_plans WHERE id = $1 FOR UPDATE;`,
+            [planId]
+          );
+          if (planRes.rows.length === 0) {
+            throw new Error(`Purchase plan ${planId} not found in database.`);
+          }
+          await client.query(
+            `UPDATE purchase_plans SET plan_status = 'paid', updated_at = $1 WHERE id = $2;`,
+            [new Date().toISOString(), planId]
+          );
+
+          // 7. Update payment record to COMPLETED
+          const updatedPayment: PaymentRecord = {
+            ...payment,
+            paypalCaptureId: captureId,
+            verifiedStatus: 'COMPLETED',
+            payerEmail,
+            rawPaypalResponse,
+            updatedAt: new Date().toISOString()
+          };
+          await client.query(
+            `UPDATE payments SET paypal_capture_id = $1, verified_status = 'COMPLETED', payer_email = $2, raw_paypal_response = $3, updated_at = $4 WHERE id = $5;`,
+            [captureId, payerEmail, JSON.stringify(rawPaypalResponse || {}), updatedPayment.updatedAt, paymentId]
+          );
+
+          // 8. Insert immutable audit log
+          await client.query(
+            `INSERT INTO audit_logs (id, actor, action, entity_type, entity_id, previous_status, new_status, details, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+            [
+              `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+              actor,
+              'CAPTURE_PAYPAL_ORDER_RECONCILIATION',
+              'PAYMENT',
+              captureId,
+              'CREATED',
+              'COMPLETED',
+              JSON.stringify({ orderId: payment.paypal_order_id, captureId, amount: captureAmount, reconciliation: true }),
+              new Date().toISOString()
+            ]
+          );
+
+          // 9. Mark capture attempt as COMPLETED (no lease ownership verification for reconciliation)
+          await client.query(
+            `UPDATE capture_attempts SET status = 'COMPLETED', paypal_capture_id = $1, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_owner = NULL WHERE id = $2;`,
+            [captureId, attemptId]
+          );
+
+          await client.query('COMMIT;');
+
+          // Sync local memory state
+          const idx = this.state.payments.findIndex(p => p.id === paymentId);
+          if (idx >= 0) this.state.payments[idx] = updatedPayment;
+          const planIdx = this.state.purchasePlans.findIndex(p => p.id === planId);
+          if (planIdx >= 0) this.state.purchasePlans[planIdx].planStatus = 'paid';
+          this.state.budget.spentAmount = newSpent;
+          this.state.budget.allocatedAmount = newAllocated;
+          this.save();
+
+          return { payment: updatedPayment, budget: { ...currentBudget, spentAmount: newSpent, allocatedAmount: newAllocated } };
+        } catch (err: any) {
+          await client.query('ROLLBACK;');
+          this.handlePgError('settleReconciliationTransaction', err);
+          throw err;
+        } finally {
+          client.release();
+        }
+      }
+
+      // Local in-memory transaction with strict balance enforcement
+      const payIdx = this.state.payments.findIndex(p => p.id === paymentId);
+      if (payIdx < 0) throw new Error(`Payment record ${paymentId} not found.`);
+      const payment = this.state.payments[payIdx];
+      if (payment.verifiedStatus === 'COMPLETED') {
+        // Idempotent
+        return { payment, budget: this.state.budget };
+      }
+
+      // Validate ACTUAL capture amount and currency
+      if (captureAmount === undefined || captureAmount === null || isNaN(captureAmount) || !isFinite(captureAmount)) {
+        throw new Error(`Reconciliation settlement failed: Invalid capture amount (${captureAmount}).`);
+      }
+      if (captureCurrency === undefined || captureCurrency === null || typeof captureCurrency !== 'string' || captureCurrency.trim() === '') {
+        throw new Error(`Reconciliation settlement failed: Invalid capture currency (${captureCurrency}).`);
+      }
+      if (Math.abs(expectedAmount - captureAmount) > 0.01) {
+        throw new Error(`Reconciliation settlement failed: Capture amount mismatch (database payment: $${expectedAmount}, PayPal capture: $${captureAmount}).`);
+      }
+      if (expectedCurrency !== captureCurrency) {
+        throw new Error(`Reconciliation settlement failed: Capture currency mismatch (database payment: ${expectedCurrency}, PayPal capture: ${captureCurrency}).`);
+      }
+
+      const currentBudget = this.state.budget;
+      const newSpent = Number((currentBudget.spentAmount + captureAmount).toFixed(2));
+      if (newSpent > currentBudget.monthlyBudget + 0.01) {
+        throw new Error(`Transaction rejected: Budget ceiling exceeded ($${newSpent.toFixed(2)} / $${currentBudget.monthlyBudget.toFixed(2)}).`);
+      }
+
+      const updatedPayment: PaymentRecord = {
+        ...payment,
+        paypalCaptureId: captureId,
+        verifiedStatus: 'COMPLETED',
+        payerEmail,
+        rawPaypalResponse,
+        updatedAt: new Date().toISOString()
+      };
+      this.state.payments[payIdx] = updatedPayment;
+
+      const plan = this.state.purchasePlans.find(p => p.id === planId);
+      if (plan) plan.planStatus = 'paid';
+
+      this.state.budget.spentAmount = newSpent;
+      this.state.budget.allocatedAmount = Math.max(0, Number((currentBudget.allocatedAmount - captureAmount).toFixed(2)));
+
+      this.state.auditLogs.unshift({
+        id: `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        actor,
+        action: 'CAPTURE_PAYPAL_ORDER_RECONCILIATION',
+        entityType: 'PAYMENT',
+        entityId: captureId,
+        previousStatus: 'CREATED',
+        newStatus: 'COMPLETED',
+        details: { orderId: payment.paypalOrderId, captureId, amount: captureAmount, reconciliation: true },
+        createdAt: new Date().toISOString()
+      });
+
+      // Update local capture attempt
+      const attemptIdx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
+      if (attemptIdx !== undefined && attemptIdx >= 0) {
+        this.state.captureAttempts[attemptIdx].status = 'COMPLETED';
+        this.state.captureAttempts[attemptIdx].paypalCaptureId = captureId;
+        this.state.captureAttempts[attemptIdx].completedAt = new Date().toISOString();
+        this.state.captureAttempts[attemptIdx].leaseExpiresAt = null;
+        this.state.captureAttempts[attemptIdx].leaseOwner = null;
+      }
+
+      this.save();
+      return { payment: updatedPayment, budget: this.state.budget };
+    }
+
   async savePaymentEvent(event: any): Promise<any> {
     if (this.pgPool) {
       try {
@@ -2113,15 +2406,11 @@ class DatabaseStore {
     }
     this.state = this.initLocalStore();
     if (this.pgPool) {
-      try {
-        await this.pgPool.query(`
-          UPDATE budget_config
-          SET spent_amount = 1200.00, allocated_amount = 1850.00, monthly_budget = 5000.00
-          WHERE id = 'default';
-        `);
-      } catch (err) {
-        this.handlePgError('reset budget', err);
-      }
+      await this.pgPool.query(`
+        UPDATE budget_config
+        SET spent_amount = 1200.00, allocated_amount = 1850.00, monthly_budget = 5000.00
+        WHERE id = 'default';
+      `);
     }
   }
 }
