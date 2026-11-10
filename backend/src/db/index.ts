@@ -2010,7 +2010,7 @@ class DatabaseStore {
           }
           const payment = payRes.rows[0];
           if (payment.verifiedStatus === 'COMPLETED') {
-            // Idempotent: payment already settled - verify identities match before returning success
+            // Idempotent: payment already settled - verify ALL identities match before returning success
             const attemptCheck = await client.query(
               `SELECT id, status, payment_id, paypal_order_id, paypal_capture_id FROM capture_attempts WHERE id = $1 FOR UPDATE;`,
               [attemptId]
@@ -2030,14 +2030,40 @@ class DatabaseStore {
               throw new Error(`Reconciliation conflict: attempt ${attemptId} order ID ${attempt.paypal_order_id} does not match payment order ID ${payment.paypal_order_id}.`);
             }
 
+            // Verify plan ID matches payment's plan (critical for resource-level authorization)
+            if (payment.purchase_plan_id !== planId) {
+              throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchase_plan_id}, not ${planId}.`);
+            }
+
             // Verify incoming capture ID matches payment's already-stored capture ID
-            if (payment.paypal_capture_id && payment.paypal_capture_id !== captureId) {
+            // Reject if payment has no stored capture ID (cannot establish identity)
+            if (!payment.paypal_capture_id) {
+              throw new Error(`Reconciliation conflict: payment ${paymentId} has no stored capture ID, cannot verify idempotent reconciliation.`);
+            }
+            if (payment.paypal_capture_id !== captureId) {
               throw new Error(`Reconciliation conflict: payment already has capture ID ${payment.paypal_capture_id}, cannot overwrite with ${captureId}.`);
             }
 
-            // Verify attempt's stored capture ID is consistent (if present)
-            if (attempt.paypal_capture_id && attempt.paypal_capture_id !== captureId) {
+            // Verify attempt's stored capture ID matches (attempt must have a capture ID for idempotent reconciliation)
+            if (!attempt.paypal_capture_id) {
+              throw new Error(`Reconciliation conflict: attempt ${attemptId} has no stored capture ID, cannot verify idempotent reconciliation.`);
+            }
+            if (attempt.paypal_capture_id !== captureId) {
               throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypal_capture_id}, cannot overwrite with ${captureId}.`);
+            }
+
+            // Validate capture amount and currency against authoritative payment record
+            if (captureAmount === undefined || captureAmount === null || isNaN(captureAmount) || !isFinite(captureAmount)) {
+              throw new Error(`Reconciliation settlement failed: Invalid capture amount (${captureAmount}).`);
+            }
+            if (captureCurrency === undefined || captureCurrency === null || typeof captureCurrency !== 'string' || captureCurrency.trim() === '') {
+              throw new Error(`Reconciliation settlement failed: Invalid capture currency (${captureCurrency}).`);
+            }
+            if (Math.abs(payment.amount - captureAmount) > 0.01) {
+              throw new Error(`Reconciliation settlement failed: Capture amount mismatch (database payment: $${payment.amount}, PayPal capture: $${captureAmount}).`);
+            }
+            if (payment.currency !== captureCurrency) {
+              throw new Error(`Reconciliation settlement failed: Capture currency mismatch (database payment: ${payment.currency}, PayPal capture: ${captureCurrency}).`);
             }
 
             // Only mark attempt as COMPLETED if it was in a reconcilable state
@@ -2199,7 +2225,7 @@ class DatabaseStore {
       if (payIdx < 0) throw new Error(`Payment record ${paymentId} not found.`);
       const payment = this.state.payments[payIdx];
       if (payment.verifiedStatus === 'COMPLETED') {
-        // Idempotent: payment already settled - verify identities match before returning success
+        // Idempotent: payment already settled - verify ALL identities match before returning success
         const attemptIdx = this.state.captureAttempts?.findIndex(c => c.id === attemptId);
         if (attemptIdx === undefined || attemptIdx < 0) {
           throw new Error(`Capture attempt ${attemptId} not found during idempotent reconciliation.`);
@@ -2216,19 +2242,40 @@ class DatabaseStore {
           throw new Error(`Reconciliation conflict: attempt ${attemptId} order ID ${attempt.paypalOrderId} does not match payment order ID ${payment.paypalOrderId}.`);
         }
 
+        // Verify plan ID matches payment's plan (critical for resource-level authorization)
+        if (payment.purchasePlanId !== planId) {
+          throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchasePlanId}, not ${planId}.`);
+        }
+
         // Verify incoming capture ID matches payment's already-stored capture ID
-        if (payment.paypalCaptureId && payment.paypalCaptureId !== captureId) {
+        // Reject if payment has no stored capture ID (cannot establish identity)
+        if (!payment.paypalCaptureId) {
+          throw new Error(`Reconciliation conflict: payment ${paymentId} has no stored capture ID, cannot verify idempotent reconciliation.`);
+        }
+        if (payment.paypalCaptureId !== captureId) {
           throw new Error(`Reconciliation conflict: payment already has capture ID ${payment.paypalCaptureId}, cannot overwrite with ${captureId}.`);
         }
 
-        // Verify attempt's stored capture ID is consistent (if present)
-        if (attempt.paypalCaptureId && attempt.paypalCaptureId !== captureId) {
+        // Verify attempt's stored capture ID matches (attempt must have a capture ID for idempotent reconciliation)
+        if (!attempt.paypalCaptureId) {
+          throw new Error(`Reconciliation conflict: attempt ${attemptId} has no stored capture ID, cannot verify idempotent reconciliation.`);
+        }
+        if (attempt.paypalCaptureId !== captureId) {
           throw new Error(`Reconciliation conflict: attempt already has capture ID ${attempt.paypalCaptureId}, cannot overwrite with ${captureId}.`);
         }
 
-        // Verify plan ID matches payment's plan
-        if (payment.purchasePlanId !== planId) {
-          throw new Error(`Reconciliation conflict: payment belongs to plan ${payment.purchasePlanId}, not ${planId}.`);
+        // Validate capture amount and currency against authoritative payment record
+        if (captureAmount === undefined || captureAmount === null || isNaN(captureAmount) || !isFinite(captureAmount)) {
+          throw new Error(`Reconciliation settlement failed: Invalid capture amount (${captureAmount}).`);
+        }
+        if (captureCurrency === undefined || captureCurrency === null || typeof captureCurrency !== 'string' || captureCurrency.trim() === '') {
+          throw new Error(`Reconciliation settlement failed: Invalid capture currency (${captureCurrency}).`);
+        }
+        if (Math.abs(payment.amount - captureAmount) > 0.01) {
+          throw new Error(`Reconciliation settlement failed: Capture amount mismatch (database payment: $${payment.amount}, PayPal capture: $${captureAmount}).`);
+        }
+        if (payment.currency !== captureCurrency) {
+          throw new Error(`Reconciliation settlement failed: Capture currency mismatch (database payment: ${payment.currency}, PayPal capture: ${captureCurrency}).`);
         }
 
         // Only mark attempt as COMPLETED if it was in a reconcilable state
