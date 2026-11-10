@@ -219,8 +219,6 @@ CREATE TABLE IF NOT EXISTS capture_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_payment_id ON capture_attempts(payment_id);
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_status_started ON capture_attempts(status, started_at);
-CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
-
 -- ==============================================================================
 -- UPGRADE MIGRATIONS (idempotent - safe to run multiple times)
 -- ==============================================================================

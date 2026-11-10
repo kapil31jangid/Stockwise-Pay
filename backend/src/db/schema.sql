@@ -217,7 +217,6 @@ CREATE TABLE IF NOT EXISTS capture_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_payment_id ON capture_attempts(payment_id);
 CREATE INDEX IF NOT EXISTS idx_capture_attempts_status_started ON capture_attempts(status, started_at);
-CREATE INDEX IF NOT EXISTS idx_capture_attempts_lease_expires ON capture_attempts(lease_expires_at) WHERE status = 'CAPTURING';
 -- Partial unique index: only ONE active (CAPTURING or COMPLETED) attempt per PayPal order
 CREATE UNIQUE INDEX IF NOT EXISTS uq_capture_attempts_active_order
   ON capture_attempts(paypal_order_id)
