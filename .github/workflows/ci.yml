@@ -17,6 +17,7 @@ jobs:
       PAYPAL_CLIENT_ID: mock_paypal_client_id_ci
       PAYPAL_CLIENT_SECRET: mock_paypal_client_secret_ci
       PAYPAL_WEBHOOK_ID: WH-CI-PIPELINE-VERIFIED-2026
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stockwise_test
 
     steps:
       - name: Check out repository
