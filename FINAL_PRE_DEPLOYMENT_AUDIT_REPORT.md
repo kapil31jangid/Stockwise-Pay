@@ -3,8 +3,9 @@
 **Date:** November 10, 2026  
 **Auditor:** Principal Software Architect, Security & QA Engineering Team  
 **Repository:** https://github.com/kapil31jangid/Stockwise-Pay  
-**Latest Verified Implementation Commit:** `10e8dce8347be3fe52f854d1006098e9b83f0957`  
-**GitHub Actions:** [Run 42797402565](https://github.com/kapil31jangid/Stockwise-Pay/actions/runs/42797402565) — **passed**  
+**Latest Verified Implementation Commit:** `728064849771d9d166e5c4724bdd1840d836be08`
+**CI Configuration Baseline:** `10e8dce8347be3fe52f854d1006098e9b83f0957`
+**GitHub Actions:** [Run 42815619041](https://github.com/kapil31jangid/Stockwise-Pay/actions/runs/42815619041) — **passed**
 **Final Decision:** `NOT READY — REAL PAYPAL SANDBOX TRANSACTION NOT EVIDENCED`
 
 ---
@@ -26,7 +27,7 @@ CSV Inventory Import (Elena - Buyer)
   ➔ PostgreSQL Immutable Audit Trail & Double-Entry Ledger Logging
 ```
 
-The current local verification run passed 135 tests: 7 intelligence, 13 supplier-intelligence, and 115 backend tests, including 66 PostgreSQL-backed reconciliation regression tests. Backend and frontend builds, dependency scanning, fresh-schema validation, legacy-upgrade validation, and the complete GitHub Actions run also passed. PayPal capture paths remain automated test/demo fulfillment; no real Sandbox transaction is evidenced.
+The verified GitHub Actions run passed 139 tests: 7 intelligence, 13 supplier-intelligence, and 119 backend tests, including the new in-memory reconciliation fail-closed regressions. The local intelligence, supplier-intelligence, build, lint, and dependency checks passed; the local backend database suite was blocked by the workstation's unreachable Supabase hostname, while the CI PostgreSQL-backed suite passed. PayPal capture paths remain automated test/demo fulfillment; no real Sandbox transaction is evidenced.
 
 ---
 
@@ -95,17 +96,19 @@ FINAL VERDICT: NOT READY — REAL PAYPAL SANDBOX TRANSACTION NOT EVIDENCED
 
 ---
 
-## 4. Test Suite Execution & Verification Evidence (Pre-Patch Baseline)
+## 4. Test Suite Execution & Verification Evidence
 
-The following results are from the local workspace on November 10, 2026. PayPal capture paths in the automated suite use test-mode/demo fulfillment and mocked reconciliation responses; they are not evidence of a real PayPal Sandbox transaction.
+The following results were collected on November 10, 2026. Local commands and GitHub Actions evidence are separated. PayPal capture paths in the automated suite use test-mode/demo fulfillment and mocked reconciliation responses; they are not evidence of a real PayPal Sandbox transaction.
 
 ### 4.1 Unit & Integration Test Summary
 | Suite | Command | Total | Passed | Failed | Skipped | Duration |
 |---|---|---|---|---|---|---|
 | **Inventory Intelligence (Demand Forecasting)** | `npm --prefix intelligence test` | 7 | 7 | 0 | 0 | 240 ms |
 | **Supplier Intelligence (Optimization & Scoring)** | `npm --prefix supplier-intelligence test` | 13 | 13 | 0 | 0 | 299 ms |
-| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 115 | 115 | 0 | 0 | 316 s |
-| **Combined local test total** | 7 + 13 + 115 | **135** | **135** | **0** | **0** | Recorded per-suite |
+| **Backend API, Security, DB & PayPal (local)** | `npm --prefix backend test` | 119 | 46 | 73 | 0 | 280 s; blocked by unreachable Supabase DNS |
+| **Combined local test total (completed suites only)** | 7 + 13 | **20** | **20** | **0** | **0** | Recorded per-suite |
+
+The local backend run is not reported as passing: its database-backed setup failed with `getaddrinfo ENOTFOUND db.fkldxvyzmmkzeqkciolh.supabase.co`. The authoritative PostgreSQL-backed result is the GitHub Actions run below.
 
 ### 4.2 Production Build Verification
 | Component | Command | Result | Output Details |
@@ -113,8 +116,8 @@ The following results are from the local workspace on November 10, 2026. PayPal 
 | **Backend Build** | `npm --prefix backend run build` | **EXIT 0** | Clean TypeScript compilation to `dist/` |
 | **Frontend Next.js Build** | `npm --prefix frontend run build` | **EXIT 0** | 11/11 static pages prerendered, all chunks optimized |
 | **Frontend Code Quality** | `npm --prefix frontend run lint` | **EXIT 0** | ESLint verified across all routes and components; warnings only |
-| **Fresh PostgreSQL schema** | CI `psql -v ON_ERROR_STOP=1` validation | **PASS** | Run 42797402565 |
-| **Legacy PostgreSQL upgrade** | CI legacy fixture + idempotent upgrade validation | **PASS** | Existing records and required constraints preserved |
+| **Fresh PostgreSQL schema** | CI `psql -v ON_ERROR_STOP=1` validation | **PASS** | Run 42815619041 |
+| **Legacy PostgreSQL upgrade** | CI legacy fixture + idempotent upgrade validation | **PASS** | Run 42815619041; existing records and required constraints preserved |
 | **Dependency vulnerability audit** | `npm audit --audit-level=critical` | **PASS** | 0 vulnerabilities |
 
 ### 4.3 Sandbox Integration Evidence
@@ -218,15 +221,15 @@ The following findings were identified and remediated in the final patch release
 
 ## 7. Test Suite Execution & Verification Evidence (Post-Patch)
 
-*Local verification executed on November 10, 2026 against the local PostgreSQL-backed test path. GitHub Actions run 42797402565 independently verified the PostgreSQL migrations and full CI pipeline. PayPal tests used automated test/demo fulfillment and mocked reconciliation responses; no real Sandbox transaction is claimed.*
+*Local verification was executed on November 10, 2026. The local backend suite was blocked by the unreachable workstation Supabase hostname. GitHub Actions run 42815619041 independently verified the PostgreSQL migrations and full CI pipeline. PayPal tests used automated test/demo fulfillment and mocked reconciliation responses; no real Sandbox transaction is claimed.*
 
 ### 7.1 Unit & Integration Test Summary
 | Suite | Command | Total | Passed | Failed | Skipped | Duration |
 |---|---|---|---|---|---|---|---|
 | **Inventory Intelligence (Demand Forecasting)** | `npm --prefix intelligence test` | 7 | 7 | 0 | 0 | 240 ms |
 | **Supplier Intelligence (Optimization & Scoring)** | `npm --prefix supplier-intelligence test` | 13 | 13 | 0 | 0 | 299 ms |
-| **Backend API, Security, DB & PayPal** | `npm --prefix backend test` | 115 | 115 | 0 | 0 | 316 s |
-| **Combined local test total** | 7 + 13 + 115 | **135** | **135** | **0** | **0** | Recorded per-suite |
+| **Backend API, Security, DB & PayPal (CI)** | `npm --prefix backend test` | 119 | 119 | 0 | 0 | 2.8 s |
+| **Combined CI test total** | 7 + 13 + 119 | **139** | **139** | **0** | **0** | Run 42815619041 |
 
 ### 7.2 Production Build Verification
 | Component | Command | Result | Output Details |
@@ -244,7 +247,7 @@ The following findings were identified and remediated in the final patch release
 - ✅ **Budget ceiling protection** — "Budget Safety: Database transaction rejects payment capture when budget ceiling is exceeded" (PASS)
 - ✅ **Fail-closed auth on DB outage** — "Auth Security: Fail-closed verification rejects tokens when database revocation checks fail" (PASS)
 
-### 7.4 Distributed Capture & Reconciliation Regression Tests (66 Tests)
+### 7.4 Distributed Capture & Reconciliation Regression Tests
 *New regression test suite covering critical PayPal capture scenarios from audit remediation:*
 - ✅ **Capture lease/heartbeat** — Lock acquisition, renewal, expiry detection, takeover after 5-min lease expiry
 - ✅ **Reconciliation** — Expired lease with PayPal IDs triggers RECONCILE, forceNewAttempt after APPROVED/COMPLETED
@@ -262,7 +265,8 @@ No real PayPal Sandbox transaction was independently executed or evidenced in th
 
 ## 8. Pre-Deployment Checklist
 
-- [x] All locally executed module tests passing: intelligence 7/7, supplier-intelligence 13/13, backend 115/115.
+- [x] GitHub Actions module tests passing: intelligence 7/7, supplier-intelligence 13/13, backend 119/119.
+- [ ] Local backend suite independently rerun against reachable PostgreSQL (blocked by workstation Supabase DNS failure).
 - [x] Backend TypeScript build succeeds without errors (`tsc`).
 - [x] Frontend Next.js build succeeds with all 11 routes compiled (`next build`).
 - [x] Frontend linting passes without errors (`next lint`).
@@ -277,7 +281,7 @@ No real PayPal Sandbox transaction was independently executed or evidenced in th
 - [x] PayPal webhook signature verification and duplicate event rejection active using `event.id`.
 - [x] Role-Based Access Control verified (Buyer vs Approver vs Treasury).
 - [x] CI pipeline is configured with reproducible `npm ci`, migration validation, builds, tests, and blocking critical audit checks.
-- [x] Latest GitHub Actions run independently verified: [42797402565](https://github.com/kapil31jangid/Stockwise-Pay/actions/runs/42797402565).
+- [x] Latest GitHub Actions run independently verified: [42815619041](https://github.com/kapil31jangid/Stockwise-Pay/actions/runs/42815619041).
 - [ ] Configure production PayPal Live credentials (for real customer payments).
 - [ ] Register HTTPS production webhook URL in PayPal Developer Portal.
 
@@ -285,5 +289,6 @@ No real PayPal Sandbox transaction was independently executed or evidenced in th
 
 **Report Approved by:** Lead Application Security Architect & Full-Stack Engineering Team  
 **StockWise Pay Version:** 1.0.0-rc3  
-**Latest Verified Implementation Commit:** `10e8dce8347be3fe52f854d1006098e9b83f0957`
-**GitHub Actions Run:** `42797402565` — PASS
+**Latest Verified Implementation Commit:** `728064849771d9d166e5c4724bdd1840d836be08`
+**GitHub Actions Run:** `42815619041` — PASS
+**Audit documentation commit:** updated after implementation verification; see repository history.
