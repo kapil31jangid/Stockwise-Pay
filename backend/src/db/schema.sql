@@ -76,8 +76,6 @@ CREATE TABLE IF NOT EXISTS purchase_plans (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_purchase_plans_created_by ON purchase_plans(created_by_user_id);
-
 -- 6. PLAN VERSIONS TABLE
 CREATE TABLE IF NOT EXISTS plan_versions (
   id VARCHAR(50) PRIMARY KEY,
