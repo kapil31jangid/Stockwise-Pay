@@ -54,8 +54,10 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stockwise_test
         run: |
-          # Create test database
-          psql -U postgres -c "CREATE DATABASE stockwise_test;" || true
+          export PGHOST=localhost PGPORT=5432 PGUSER=postgres PGPASSWORD=postgres
+          # Recreate the test database explicitly; failures must stop this step.
+          psql -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS stockwise_test WITH (FORCE);"
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE stockwise_test;"
           # Apply schema with strict error handling
           psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_test -f backend/src/db/schema.sql
           # Apply supabase (seed data)
@@ -188,8 +190,10 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stockwise_upgrade
         run: |
-          # Create upgrade test database
-          psql -U postgres -c "CREATE DATABASE stockwise_upgrade;" || true
+          export PGHOST=localhost PGPORT=5432 PGUSER=postgres PGPASSWORD=postgres
+          # Recreate the upgrade test database explicitly; failures must stop this step.
+          psql -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS stockwise_upgrade WITH (FORCE);"
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE stockwise_upgrade;"
           # Apply LEGACY schema first (simulate existing DB with old schema and data)
           psql -v ON_ERROR_STOP=1 -U postgres -d stockwise_upgrade -f backend/src/db/legacy_schema.sql
           # Verify legacy state before upgrade
