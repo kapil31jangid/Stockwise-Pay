@@ -62,7 +62,7 @@ CREATE TABLE suppliers (
   contact_phone VARCHAR(50),
   location VARCHAR(255),
   estimated_lead_time_days INTEGER NOT NULL DEFAULT 7,
-  reliability_score DECIMAL(3,2) NOT NULL DEFAULT 0.95,
+  reliability_score DECIMAL(5,2) NOT NULL DEFAULT 95.00,
   payment_terms VARCHAR(100),
   specialties JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
