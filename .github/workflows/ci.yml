@@ -392,11 +392,18 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix intelligence test 2>&1 | tee intelligence-test-output.txt
-          # Parse test runner summary (tsx --test outputs: "ℹ tests N", "ℹ pass N", "ℹ fail N")
-          PASSED=$(grep -E "^\s*ℹ\s+pass\s+" intelligence-test-output.txt | tail -1 | sed -E 's/.*pass\s+([0-9]+).*/\1/' || echo "0")
-          FAILED=$(grep -E "^\s*ℹ\s+fail\s+" intelligence-test-output.txt | tail -1 | sed -E 's/.*fail\s+([0-9]+).*/\1/' || echo "0")
-          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ]; then
-            echo "❌ Intelligence tests failed: $FAILED failures, $PASSED passed"
+          summary_value() {
+            local key="$1"
+            local line
+            line=$(grep -E "^[[:space:]]*(ℹ|#)[[:space:]]+${key}[[:space:]]+[0-9]+[[:space:]]*$" intelligence-test-output.txt | tail -1)
+            if [ -z "$line" ]; then return 1; fi
+            printf '%s\n' "$line" | sed -E "s/.*${key}[[:space:]]+([0-9]+).*/\1/"
+          }
+          TESTS=$(summary_value tests) || { echo "❌ Intelligence test summary missing"; exit 1; }
+          PASSED=$(summary_value pass) || { echo "❌ Intelligence pass count missing"; exit 1; }
+          FAILED=$(summary_value fail) || { echo "❌ Intelligence fail count missing"; exit 1; }
+          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ] || [ "$TESTS" -ne $((PASSED + FAILED)) ]; then
+            echo "❌ Intelligence tests failed or summary is inconsistent: $FAILED failures, $PASSED passed, $TESTS total"
             exit 1
           fi
           echo "intel_passed=$PASSED" >> $GITHUB_OUTPUT
@@ -407,10 +414,18 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix supplier-intelligence test 2>&1 | tee supplier-test-output.txt
-          PASSED=$(grep -E "^\s*ℹ\s+pass\s+" supplier-test-output.txt | tail -1 | sed -E 's/.*pass\s+([0-9]+).*/\1/' || echo "0")
-          FAILED=$(grep -E "^\s*ℹ\s+fail\s+" supplier-test-output.txt | tail -1 | sed -E 's/.*fail\s+([0-9]+).*/\1/' || echo "0")
-          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ]; then
-            echo "❌ Supplier Intelligence tests failed: $FAILED failures, $PASSED passed"
+          summary_value() {
+            local key="$1"
+            local line
+            line=$(grep -E "^[[:space:]]*(ℹ|#)[[:space:]]+${key}[[:space:]]+[0-9]+[[:space:]]*$" supplier-test-output.txt | tail -1)
+            if [ -z "$line" ]; then return 1; fi
+            printf '%s\n' "$line" | sed -E "s/.*${key}[[:space:]]+([0-9]+).*/\1/"
+          }
+          TESTS=$(summary_value tests) || { echo "❌ Supplier test summary missing"; exit 1; }
+          PASSED=$(summary_value pass) || { echo "❌ Supplier pass count missing"; exit 1; }
+          FAILED=$(summary_value fail) || { echo "❌ Supplier fail count missing"; exit 1; }
+          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ] || [ "$TESTS" -ne $((PASSED + FAILED)) ]; then
+            echo "❌ Supplier tests failed or summary is inconsistent: $FAILED failures, $PASSED passed, $TESTS total"
             exit 1
           fi
           echo "supplier_passed=$PASSED" >> $GITHUB_OUTPUT
@@ -421,10 +436,18 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix backend test 2>&1 | tee backend-test-output.txt
-          PASSED=$(grep -E "^\s*ℹ\s+pass\s+" backend-test-output.txt | tail -1 | sed -E 's/.*pass\s+([0-9]+).*/\1/' || echo "0")
-          FAILED=$(grep -E "^\s*ℹ\s+fail\s+" backend-test-output.txt | tail -1 | sed -E 's/.*fail\s+([0-9]+).*/\1/' || echo "0")
-          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ]; then
-            echo "❌ Backend tests failed: $FAILED failures, $PASSED passed"
+          summary_value() {
+            local key="$1"
+            local line
+            line=$(grep -E "^[[:space:]]*(ℹ|#)[[:space:]]+${key}[[:space:]]+[0-9]+[[:space:]]*$" backend-test-output.txt | tail -1)
+            if [ -z "$line" ]; then return 1; fi
+            printf '%s\n' "$line" | sed -E "s/.*${key}[[:space:]]+([0-9]+).*/\1/"
+          }
+          TESTS=$(summary_value tests) || { echo "❌ Backend test summary missing"; exit 1; }
+          PASSED=$(summary_value pass) || { echo "❌ Backend pass count missing"; exit 1; }
+          FAILED=$(summary_value fail) || { echo "❌ Backend fail count missing"; exit 1; }
+          if [ "$FAILED" -gt 0 ] || [ "$PASSED" -eq 0 ] || [ "$TESTS" -ne $((PASSED + FAILED)) ]; then
+            echo "❌ Backend tests failed or summary is inconsistent: $FAILED failures, $PASSED passed, $TESTS total"
             exit 1
           fi
           echo "backend_passed=$PASSED" >> $GITHUB_OUTPUT
