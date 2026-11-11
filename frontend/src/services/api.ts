@@ -275,8 +275,11 @@ export const api = {
   async getPurchasePlans(): Promise<PurchasePlan[]> {
     let raw: any[] = [];
     if (API_BASE_URL) {
-      const res = await fetchJson<any[]>(`${API_BASE_URL}/plans`);
-      raw = Array.isArray(res) ? res : [];
+      const res = await fetchJson<any>(`${API_BASE_URL}/plans`);
+      // The API returns a `{ success, data }` envelope.  Keep accepting a
+      // bare array for backwards compatibility, but never silently discard
+      // the authoritative plans when the envelope is used.
+      raw = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
     } else {
       raw = getStoredData(STORAGE_KEYS.PLANS, initialPurchasePlans);
     }

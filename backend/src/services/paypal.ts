@@ -184,19 +184,22 @@ class PayPalService {
       });
     }
 
-    // Apply 5% volume discount over $500
-    let discountAmount = 0;
-    if (computedSubtotal > 500) {
-      discountAmount = Number((computedSubtotal * 0.05).toFixed(2));
+    // The approved purchase-plan total is the single authoritative financial
+    // commitment.  Repricing it here (for example, by independently adding a
+    // shipping charge) can make the buyer approve a different amount from the
+    // one shown to the approver and stored in the plan.
+    const authoritativeTotal = Number(plan.calculatedTotal);
+    if (!Number.isFinite(authoritativeTotal) || authoritativeTotal < 0) {
+      throw new Error(`Plan ${planId} has an invalid approved total.`);
     }
 
-    // Logistics shipping fee
-    let shippingFee = 25.00;
-    if (computedSubtotal > 1000) {
-      shippingFee = 0.00;
-    }
-
-    const authoritativeTotal = Number((computedSubtotal - discountAmount + shippingFee).toFixed(2));
+    // Keep the Orders v2 breakdown internally consistent with the approved
+    // total.  A lower plan total represents a planner-approved discount; a
+    // higher total represents a planner-approved charge.  No new fee or
+    // discount is invented at checkout.
+    const planAdjustment = Number((authoritativeTotal - computedSubtotal).toFixed(2));
+    const shippingFee = Math.max(0, planAdjustment);
+    const discountAmount = Math.max(0, -planAdjustment);
     const token = await this.getAccessToken();
 
     if (token) {
