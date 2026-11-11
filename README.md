@@ -625,11 +625,18 @@ NEXT_PUBLIC_PAYPAL_CLIENT_ID=your_sandbox_client_id  # SAME as backend
 
 ### 6. Test the Full Flow
 
-1. Start both servers (`npm run dev:backend` + `npm run dev:frontend`)
+For the deployed application:
+
+- Frontend: `https://stockwise-pay-alpha.vercel.app`
+- Backend API: `https://stockwise-pay-production.up.railway.app/api`
+
+Use the project owner's privately supplied **Personal Sandbox Buyer** credentials at the PayPal checkout screen. Credentials are intentionally not stored in this repository.
+
+1. Start both servers (`npm run dev:backend` + `npm run dev:frontend`) for local testing, or open the deployed frontend
 2. Log in as **Marcus Vance** (LEAD_APPROVER) or **David Chen** (TREASURY)
 3. Go to **Purchase Planner** → Generate a plan → Approve it
 4. Go to **Payments** → Select the approved plan
-5. Click **PayPal Checkout** → Log in with the **Personal Sandbox Buyer** account
+5. Click **PayPal Checkout** → Log in with the privately supplied **Personal Sandbox Buyer** account
 6. Approve the payment
 7. Backend captures the order → Verify plan status becomes **PAID**
 8. Check the **Business Sandbox Seller** account for received payment
@@ -638,12 +645,12 @@ NEXT_PUBLIC_PAYPAL_CLIENT_ID=your_sandbox_client_id  # SAME as backend
 
 ## PayPal Sandbox Test Accounts
 
-Use this table to record your project-specific Sandbox test accounts. **Do not commit real credentials to Git.** Fill in locally or share privately with evaluators.
+Use this table to record project-specific Sandbox test accounts. **Do not commit real credentials to Git.** Fill in locally or share privately with evaluators.
 
 | Account | Purpose | Email | Password |
 |---------|---------|-------|----------|
 | **Business Sandbox Seller** | Receives test payments (merchant) | `[Add actual test email]` | `[Do not commit password]` |
-| **Personal Sandbox Buyer** | Approves test payments (buyer) | `[Add actual test email]` | `[Do not commit password]` |
+| **Personal Sandbox Buyer** | Approves test payments (buyer) | `[Provided privately to evaluator]` | `[Provided privately; never commit]` |
 
 ### Important Notes
 
