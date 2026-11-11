@@ -1,3 +1,5 @@
+
+
 # StockWise Pay — Supplier Intelligence & Budget Optimization Module
 
 Authored for **Member 4's** Supplier Comparison, Budget Optimization, and AI Agent responsibilities, consuming **Member 2's** `intelligence/` report outputs without modifying Member 2's code.

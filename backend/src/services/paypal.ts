@@ -137,7 +137,7 @@ class PayPalService {
       if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'test') {
         throw err;
       }
-      console.warn('⚠️ PayPal OAuth token acquisition failed in dev mode:', err.message);
+      console.warn('⚠️ PayPal OAuth token acquisition failed in dev mode:', err.message, err.cause);
       return null;
     }
   }
