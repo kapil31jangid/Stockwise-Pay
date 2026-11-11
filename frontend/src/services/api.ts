@@ -529,14 +529,7 @@ export const api = {
         body: JSON.stringify({ planId: orderPayload.planId }),
       });
     }
-    return {
-      orderId: `PAYPAL-SANDBOX-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-      approvalUrl: `https://www.sandbox.paypal.com/checkoutnow?token=EC-${Date.now()}`,
-      status: "CREATED",
-      amount: Number(orderPayload.amount.toFixed(2)),
-      currency: orderPayload.currency,
-      isMock: true,
-    };
+    throw new Error("PayPal backend is not configured. Set NEXT_PUBLIC_API_URL before starting checkout.");
   },
 
   async capturePayPalOrder(capturePayload: {
@@ -568,25 +561,7 @@ export const api = {
       };
     }
 
-    const newRecord: PaymentRecord = {
-      id: `pay-${Date.now()}`,
-      orderId: `PO-2026-${Math.floor(1000 + Math.random() * 9000)}`,
-      planTitle: capturePayload.planTitle,
-      supplierName: capturePayload.supplierName,
-      amount: capturePayload.amount,
-      currency: capturePayload.currency,
-      date: new Date().toISOString().replace("T", " ").substring(0, 16),
-      method: "PayPal Sandbox",
-      status: "completed",
-      paypalTransactionId: `SANDBOX-${Math.random().toString(36).substring(2, 12).toUpperCase()}`,
-      invoiceNumber: `INV-SW-${Math.floor(10000 + Math.random() * 90000)}`,
-      itemSummary: capturePayload.itemSummary,
-    };
-
-    const current = getStoredData(STORAGE_KEYS.PAYMENTS, initialPayments);
-    const updated = [newRecord, ...current];
-    setStoredData(STORAGE_KEYS.PAYMENTS, updated);
-    return newRecord;
+    throw new Error("PayPal backend is not configured. Payment capture cannot be simulated from the browser.");
   },
 
   resetToDefaults(): void {

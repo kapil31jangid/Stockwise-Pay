@@ -103,6 +103,7 @@ export class DatabaseStore {
   private state: DatabaseState;
   private pgPool: pg.Pool | null = null;
   public isPostgres: boolean = false;
+  public persistenceMode: 'postgres' | 'local' | 'unavailable' = 'local';
 
   constructor() {
     this.state = this.initLocalStore();
@@ -120,15 +121,14 @@ export class DatabaseStore {
           idleTimeoutMillis: 30000
         });
         this.isPostgres = true;
+        this.persistenceMode = 'postgres';
         console.log('🐘 PostgreSQL / Supabase connection configured via DATABASE_URL');
       } catch (err) {
-        if (process.env.NODE_ENV === 'production') {
-          console.error('FATAL: Failed to initialize PostgreSQL pool in production:', err);
-          throw new Error('Production database connection failed. Silent local store fallback is disabled in production.');
-        }
-        console.warn('⚠️ Failed to initialize PostgreSQL pool, falling back to local store (dev mode):', err);
+        console.error('FATAL: Failed to initialize PostgreSQL pool:', err);
         this.pgPool = null;
         this.isPostgres = false;
+        this.persistenceMode = 'unavailable';
+        throw new Error('Database initialization failed. PostgreSQL was configured, so local storage fallback is disabled.');
       }
     }
   }
@@ -141,16 +141,17 @@ export class DatabaseStore {
         client.release();
         console.log('✅ PostgreSQL connection verified successfully.');
       } catch (err: any) {
-        if (process.env.NODE_ENV === 'production') {
-          console.error('FATAL: Database connection verification failed in production:', err);
-          throw new Error(`Production database connection failed: ${err.message}`);
-        }
-        console.warn('⚠️ PostgreSQL connection failed, running in local store fallback mode (dev):', err.message);
+        console.error('FATAL: PostgreSQL connection verification failed:', err.message);
         this.isPostgres = false;
         this.pgPool = null;
+        this.persistenceMode = 'unavailable';
+        throw new Error(`Database connection failed; local fallback is disabled when DATABASE_URL is configured: ${err.message}`);
       }
     } else if (process.env.NODE_ENV === 'production') {
       throw new Error('FATAL: DATABASE_URL environment variable is required in production.');
+    } else {
+      this.persistenceMode = 'local';
+      console.warn('⚠️ Persistence mode: local simulation store (DATABASE_URL is not configured).');
     }
   }
 
@@ -2582,6 +2583,8 @@ export class DatabaseStore {
         }
         this.pgPool = null;
         this.isPostgres = false;
+        this.persistenceMode = 'unavailable';
+        throw err;
       }
     }
   }

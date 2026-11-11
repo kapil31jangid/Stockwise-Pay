@@ -39,11 +39,15 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Public Health check
 app.get(['/health', '/api/health'], (req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
+  const paypalConfigured = Boolean(process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET);
+  const persistenceReady = db.persistenceMode !== 'unavailable';
+  res.status(persistenceReady ? 200 : 503).json({
+    status: persistenceReady ? 'ok' : 'degraded',
     service: 'StockWise Pay API Server',
     environment: process.env.NODE_ENV || 'development',
-    paypalMode: process.env.PAYPAL_CLIENT_ID ? 'Live Sandbox API' : 'High-Fidelity Sandbox Simulator',
+    persistenceMode: db.persistenceMode,
+    paypalMode: paypalConfigured ? 'Sandbox API configured' : 'PayPal credentials not configured',
+    paypalConfigured,
     timestamp: new Date().toISOString()
   });
 });
@@ -97,7 +101,7 @@ if (process.env.NODE_ENV !== 'test') {
       console.log(`⚡ StockWise Pay API Server running on port ${PORT}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
       console.log(`📦 Database store initialized and ready`);
-      console.log(`💳 PayPal mode: ${process.env.PAYPAL_CLIENT_ID ? 'Configured Sandbox' : 'Sandbox Simulator (zero-setup)'}`);
+      console.log(`💳 PayPal mode: ${process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET ? 'Sandbox API configured' : 'Not configured'}`);
       console.log(`=======================================================`);
     });
   }).catch((err: any) => {

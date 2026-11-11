@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { PayPalButtons, PayPalScriptProvider } from "@paypal/react-paypal-js";
 import {
   CreditCard,
   ShieldCheck,
   CheckCircle2,
-  Clock,
   Receipt,
   FileText,
   Lock,
@@ -32,46 +32,16 @@ export default function PaymentsPage() {
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentRecord | null>(null);
 
   // PayPal Sandbox flow states
-  const [paymentStep, setPaymentStep] = useState<"idle" | "authorizing" | "ready_to_capture" | "capturing" | "success">(
-    "idle"
-  );
-  const [pendingOrder, setPendingOrder] = useState<{
-    orderId: string;
-    approvalUrl: string;
-    amount: number;
-    currency: string;
-    isMock?: boolean;
-  } | null>(null);
+  const [paymentStep, setPaymentStep] = useState<"idle" | "capturing" | "success">("idle");
+  const [paypalOrder, setPaypalOrder] = useState<{ orderId: string; amount: number; currency: string } | null>(null);
   const [lastPaymentResult, setLastPaymentResult] = useState<PaymentRecord | null>(null);
-  const [currency, setCurrency] = useState("USD");
+  const [currency] = useState("USD");
+  const capturedOrderIds = useRef<Set<string>>(new Set());
+  const paypalClientId = process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID || "";
 
   useEffect(() => {
     loadData();
 
-    // Check return parameters from PayPal Sandbox redirect
-    if (typeof window !== "undefined") {
-      const urlParams = new URLSearchParams(window.location.search);
-      const statusParam = urlParams.get("status");
-      const orderToken = urlParams.get("token");
-      const planParam = urlParams.get("planId");
-
-      if (statusParam === "cancelled") {
-        setCheckoutError("PayPal checkout was cancelled by the buyer.");
-        setPaymentStep("idle");
-      } else if (statusParam === "authorized" || orderToken) {
-        setPaymentStep("ready_to_capture");
-        if (orderToken) {
-          setPendingOrder(prev => prev ? prev : {
-            orderId: orderToken,
-            planId: planParam || "ACTIVE-PLAN",
-            amount: 0,
-            currency: "USD",
-            approvalUrl: "",
-            isMock: false
-          });
-        }
-      }
-    }
   }, []);
 
   const loadData = async () => {
@@ -118,74 +88,30 @@ export default function PaymentsPage() {
     }
   };
 
-  // Step 1: Create Order & Request Buyer Authorization
-  const handleTriggerPayPalCheckout = async () => {
-    if (!activePlan) return;
-    setIsLoading(true);
-    setCheckoutError(null);
-    setPaymentStep("authorizing");
-
-    try {
-      // 1. Prepare Order on backend
-      const order = await api.createPayPalOrder({
-        planId: activePlan.id,
-        amount: activePlan.totalAmount ?? 0,
-        currency: currency,
-        items: (activePlan.items ?? []).map((i) => ({
-          name: i.productName || i.sku,
-          quantity: i.selectedQty || i.recommendedQty || 1,
-          unitPrice: i.unitCost || 0,
-        })),
-      });
-
-      setPendingOrder({
-        orderId: order.orderId,
-        approvalUrl: order.approvalUrl,
-        amount: Number(order.amount),
-        currency: order.currency,
-        isMock: order.isMock,
-      });
-      setPaymentStep("ready_to_capture");
-
-      // In real sandbox mode with external approval link, open popup for buyer authorization
-      if (order.approvalUrl && !order.approvalUrl.includes('token=SANDBOX-ORD')) {
-        window.open(order.approvalUrl, '_blank', 'width=600,height=750,noopener,noreferrer');
-      }
-    } catch (err: any) {
-      console.error("Order creation failed:", err);
-      setCheckoutError(err.message || "PayPal Sandbox order creation failed. Ensure plan is approved.");
-      setPaymentStep("idle");
-    } finally {
-      setIsLoading(false);
-    }
+  const createPayPalOrder = async () => {
+    if (!activePlan) throw new Error("Select an approved purchase plan first.");
+    const order = await api.createPayPalOrder({ planId: activePlan.id, amount: activePlan.totalAmount ?? 0, currency, items: [] });
+    setPaypalOrder({ orderId: order.orderId, amount: Number(order.amount), currency: order.currency });
+    return order.orderId;
   };
 
-  // Step 2: Confirm Buyer Authorization & Execute Authoritative Capture
-  const handleConfirmAndCapturePayment = async () => {
-    if (!activePlan || !pendingOrder) return;
+  const captureApprovedPayPalOrder = async (data: { orderID?: string }) => {
+    const orderId = data.orderID;
+    if (!orderId || capturedOrderIds.current.has(orderId) || !activePlan || isLoading) return;
+    capturedOrderIds.current.add(orderId);
     setIsLoading(true);
     setCheckoutError(null);
     setPaymentStep("capturing");
-
     try {
-      const record = await api.capturePayPalOrder({
-        orderId: pendingOrder.orderId,
-        planTitle: activePlan.title || `Restock Plan #${activePlan.id}`,
-        supplierName: (activePlan.items && activePlan.items[0]?.selectedSupplierName) || "VoltCore & Apex Wholesale Consolidated",
-        amount: pendingOrder.amount,
-        currency: pendingOrder.currency,
-        itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} electronics SKUs (${activePlan.title || 'Restock'})`,
-      });
-
-      // Fetch fresh authoritative state from backend
+      const record = await api.capturePayPalOrder({ orderId, planTitle: activePlan.title || `Restock Plan #${activePlan.id}`, supplierName: activePlan.items?.[0]?.selectedSupplierName || "Consolidated Supplier Network", amount: paypalOrder?.amount ?? activePlan.totalAmount ?? 0, currency: paypalOrder?.currency ?? "USD", itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} procurement items` });
       await loadData();
       setLastPaymentResult(record);
       setPaymentStep("success");
-      setPendingOrder(null);
-    } catch (captureErr: any) {
-      console.error("Capture failed:", captureErr);
-      setCheckoutError(captureErr.message || "Failed to capture payment in PayPal Sandbox");
-      setPaymentStep("ready_to_capture");
+      setPaypalOrder(null);
+    } catch (err: any) {
+      capturedOrderIds.current.delete(orderId);
+      setCheckoutError(err.message || "PayPal capture failed. No payment is shown as successful.");
+      setPaymentStep("idle");
     } finally {
       setIsLoading(false);
     }
@@ -205,7 +131,7 @@ export default function PaymentsPage() {
               </h2>
               <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-xs flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                Verified Sandbox Gateway
+                PayPal Sandbox integration
               </span>
             </div>
             <p className="text-xs text-slate-500">
@@ -216,7 +142,7 @@ export default function PaymentsPage() {
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-xs">
               <Lock className="w-3.5 h-3.5 text-blue-400" />
-              <span>PayPal Orders v2 Verified Gateway</span>
+              <span>PayPal Orders v2</span>
             </span>
           </div>
         </div>
@@ -430,15 +356,7 @@ export default function PaymentsPage() {
 
               <div className="flex items-center gap-1.5 text-xs text-slate-500">
                 <span>Currency:</span>
-                <select
-                  value={currency}
-                  onChange={(e) => setCurrency(e.target.value)}
-                  className="px-2 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-800 font-bold"
-                >
-                  <option value="USD">USD ($)</option>
-                  <option value="EUR">EUR (€)</option>
-                  <option value="GBP">GBP (£)</option>
-                </select>
+                <span className="px-2 py-1 text-xs rounded-md border border-slate-300 bg-slate-50 text-slate-800 font-bold">USD ($)</span>
               </div>
             </div>
           </div>
@@ -457,7 +375,12 @@ export default function PaymentsPage() {
               </div>
             </div>
 
-            {paymentStep === "success" ? (
+            {!paypalClientId ? (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-2">
+                <p className="font-bold">PayPal Sandbox is not configured</p>
+                <p>Set <code>NEXT_PUBLIC_PAYPAL_CLIENT_ID</code> to the public client ID from the same Sandbox REST app as the backend credentials, then restart the frontend.</p>
+              </div>
+            ) : paymentStep === "success" ? (
               <div className="p-6 bg-emerald-50 border border-emerald-200 rounded-2xl text-center space-y-3">
                 <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto">
                   <CheckCircle2 className="w-6 h-6" />
@@ -474,97 +397,29 @@ export default function PaymentsPage() {
                 <button
                   onClick={() => {
                     setPaymentStep("idle");
-                    setPendingOrder(null);
+                    setPaypalOrder(null);
                   }}
                   className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
                 >
                   Done
                 </button>
               </div>
-            ) : paymentStep === "ready_to_capture" ? (
-              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl space-y-3">
-                <div className="flex items-center gap-2 text-blue-900 font-bold text-xs">
-                  <Clock className="w-4 h-4 text-blue-600 shrink-0" />
-                  <span>PayPal Sandbox Order: <strong className="font-mono">{pendingOrder?.orderId}</strong></span>
-                </div>
-                <p className="text-[11px] text-blue-900 font-semibold">
-                  Authoritative checkout total: {pendingOrder?.currency} {pendingOrder?.amount.toFixed(2)}
-                </p>
-                <p className="text-[11px] text-blue-800 leading-relaxed">
-                  Please log in and authorize payment using your configured PayPal Sandbox buyer account. Once authorized, confirm capture to settle the order.
-                </p>
-                <div className="space-y-2 pt-1">
-                  {pendingOrder?.approvalUrl && (
-                    <a
-                      href={pendingOrder.approvalUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-2.5 px-3 bg-[#003087] hover:bg-[#00276D] text-white text-xs font-bold rounded-xl text-center flex items-center justify-center gap-1.5 shadow-xs transition-colors"
-                    >
-                      <span>Open PayPal Checkout Window ↗</span>
-                    </a>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleConfirmAndCapturePayment}
-                    disabled={isLoading}
-                    className="w-full py-3 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
-                  >
-                    {isLoading ? <Clock className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                    <span>Confirm Buyer Authorization & Capture</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaymentStep("idle");
-                      setPendingOrder(null);
-                    }}
-                    className="w-full py-1.5 text-slate-500 hover:text-slate-800 text-[11px] font-semibold text-center"
-                  >
-                    Cancel Order
-                  </button>
-                </div>
-              </div>
             ) : (
               <div className="space-y-3">
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Triggers the PayPal Orders v2 Sandbox authorization and settlement workflow through the backend API.
+                  The backend creates the authoritative USD Orders v2 order. PayPal captures only after the buyer approves in the Smart Buttons checkout.
                 </p>
-
-                {/* PayPal Styled Buttons */}
-                <div className="space-y-2 pt-1">
-                  <button
-                    onClick={handleTriggerPayPalCheckout}
-                    disabled={isLoading}
-                    className="w-full py-3 px-4 rounded-xl bg-[#FFC439] hover:bg-[#F2BA36] text-[#003087] font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all hover:shadow-md cursor-pointer disabled:opacity-50"
-                  >
-                    {paymentStep === "authorizing" ? (
-                      <span className="flex items-center gap-2 text-xs font-bold text-slate-900">
-                        <Clock className="w-4 h-4 animate-spin" /> Preparing Sandbox Order...
-                      </span>
-                    ) : paymentStep === "capturing" ? (
-                      <span className="flex items-center gap-2 text-xs font-bold text-slate-900">
-                        <Clock className="w-4 h-4 animate-spin" /> Capturing Payment...
-                      </span>
-                    ) : (
-                      <>
-                        <span className="font-black italic text-base">Pay</span>
-                        <span className="font-black italic text-base text-[#0079C1]">Pal</span>
-                        <span className="text-xs font-bold ml-1 text-slate-800">
-                          Sandbox Checkout (${(activePlan?.totalAmount ?? 0).toFixed(2)})
-                        </span>
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    onClick={handleTriggerPayPalCheckout}
-                    disabled={isLoading}
-                    className="w-full py-2.5 px-4 rounded-xl bg-[#003087] hover:bg-[#00276D] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-2xs transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    <span>PayPal Pay in 4 (Interest-Free Wholesale Financing)</span>
-                  </button>
-                </div>
+                {paymentStep === "capturing" && <p className="text-xs font-semibold text-blue-700">Buyer approved. Verifying capture with the backend…</p>}
+                <PayPalScriptProvider options={{ clientId: paypalClientId, currency: "USD", intent: "capture", components: "buttons" }}>
+                  <PayPalButtons
+                    style={{ layout: "vertical", shape: "rect", label: "paypal" }}
+                    disabled={isLoading || activePlan?.status === "paid" || activePlan?.status !== "approved"}
+                    createOrder={createPayPalOrder}
+                    onApprove={captureApprovedPayPalOrder}
+                    onCancel={() => setCheckoutError("PayPal checkout was cancelled by the buyer.")}
+                    onError={(err) => setCheckoutError(`PayPal checkout error: ${err instanceof Error ? err.message : "Unable to complete checkout."}`)}
+                  />
+                </PayPalScriptProvider>
 
                 <div className="p-3 bg-emerald-50/80 border border-emerald-200/80 rounded-xl text-[11px] text-emerald-800 space-y-0.5">
                   <p className="font-semibold flex items-center gap-1.5 text-xs text-emerald-900">
@@ -572,7 +427,7 @@ export default function PaymentsPage() {
                     <span>PayPal Buyer & Supplier Protection</span>
                   </p>
                   <p className="text-emerald-700 text-[10px] leading-relaxed">
-                    Automated escrow release, shipment tracking validation, and full merchant audit logging enabled for this order.
+                    The UI reports success only after the backend verifies the capture and settles the ledger.
                   </p>
                 </div>
               </div>
@@ -637,7 +492,7 @@ export default function PaymentsPage() {
                           ? 'text-amber-800 bg-amber-50 border-amber-200'
                           : 'text-emerald-700 bg-emerald-50 border-emerald-200'
                       }`}>
-                        {record.method?.includes('Simulated') || record.method === 'Dev Simulator' ? 'Dev Simulator (Mock)' : 'PayPal Sandbox (Verified)'}
+                        {record.method?.includes('Simulated') || record.method === 'Dev Simulator' ? 'Dev Simulator (Mock)' : 'PayPal Sandbox'}
                       </span>
                     </td>
 

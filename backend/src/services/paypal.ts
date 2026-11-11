@@ -106,12 +106,11 @@ class PayPalService {
   async getAccessToken(): Promise<string | null> {
     const clientId = process.env.PAYPAL_CLIENT_ID;
     const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+    const simulationEnabled = process.env.NODE_ENV === 'test' || process.env.PAYPAL_SIMULATION_ENABLED === 'true';
 
     if (!clientId || !clientSecret || clientId.includes('mock') || clientId === 'your_paypal_client_id_here') {
-      if (process.env.NODE_ENV === 'production') {
-        throw new Error('FATAL: Valid PayPal Sandbox/Production credentials are required in production.');
-      }
-      return null;
+      if (simulationEnabled) return null;
+      throw new Error('PayPal Sandbox credentials are not configured. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET from the same Sandbox REST application.');
     }
 
     const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -134,11 +133,7 @@ class PayPalService {
       const data = await res.json() as any;
       return data.access_token;
     } catch (err: any) {
-      if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'test') {
-        throw err;
-      }
-      console.warn('⚠️ PayPal OAuth token acquisition failed in dev mode:', err.message, err.cause);
-      return null;
+      throw new Error(`PayPal OAuth authentication failed. Check that PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET belong to the same Sandbox REST app. ${err.message}`);
     }
   }
 
@@ -299,9 +294,9 @@ class PayPalService {
       };
     }
 
-    // Offline / Mock fallback (only allowed when PayPal credentials are not configured in dev)
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('FATAL: Valid PayPal Sandbox/Production credentials are required in production.');
+    // Offline / mock fallback is explicit and test-only by default.
+    if (process.env.NODE_ENV !== 'test' && process.env.PAYPAL_SIMULATION_ENABLED !== 'true') {
+      throw new Error('PayPal Sandbox credentials are required for payment execution. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET, or explicitly enable PAYPAL_SIMULATION_ENABLED for a non-payment demo.');
     }
 
     const mockOrderId = `SANDBOX-ORD-${Date.now()}`;

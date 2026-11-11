@@ -59,7 +59,7 @@ that the resulting plan does not exceed the available budget.
 - **Supplier comparison** — price, lead time, reliability, MOQ, and volume-discount evaluation
 - **Approval governance** — versioned plans, manager approval, rejection notes, and audit history
 - **Secure payment flow** — server-controlled totals, PayPal Orders v2 Sandbox integration, and idempotent capture
-- **Dual runtime storage** — PostgreSQL/Supabase/Neon support with a persistent local store fallback for demos
+- **Explicit persistence modes** — PostgreSQL for real payment execution; local storage is clearly marked for development-only simulation
 
 ---
 
@@ -164,7 +164,7 @@ flowchart TB
 | Experience | Next.js 14 App Router, React 18, TypeScript, Tailwind CSS, Recharts, Lucide React |
 | API | Node.js, Express, TypeScript, Zod, Multer |
 | Intelligence | TypeScript, SMA/EMA forecasting, deterministic risk and budget optimization |
-| Persistence | PostgreSQL 14+, Supabase, Neon, or persistent local JSON fallback |
+| Persistence | PostgreSQL 14+, Supabase, or Neon for payment execution; local JSON only for explicit development simulation |
 | Authentication | JWT, bcryptjs, role-based permissions, token revocation |
 | Payments | PayPal Orders v2 REST API in Sandbox mode |
 | Tooling | npm workspaces-by-prefix, tsx, TypeScript compiler, Node test runner |
@@ -302,7 +302,7 @@ selection, excluded items, and review warnings.
 
 The schema is in [`backend/src/db/schema.sql`](backend/src/db/schema.sql) and
 supports PostgreSQL 14+, Supabase, and Neon. When `DATABASE_URL` is omitted,
-the backend uses its persistent local store for development and demonstrations.
+the backend uses an explicitly reported local store for development-only simulation. If `DATABASE_URL` is set but unavailable, startup fails closed; it never silently falls back.
 
 ---
 
@@ -312,8 +312,8 @@ the backend uses its persistent local store for development and demonstrations.
 
 - Node.js 18+
 - npm
-- PostgreSQL 14+ (optional when using the local store fallback)
-- PayPal Sandbox credentials (optional for non-payment flows)
+- PostgreSQL 14+ (required for real payment execution)
+- PayPal Sandbox credentials from one REST application (required for real payment execution)
 
 ### Install dependencies
 
@@ -367,11 +367,12 @@ npm run dev:frontend
 | `PORT` | Express listening port; defaults to `5000` | Optional |
 | `NODE_ENV` | Runtime environment | Optional |
 | `FRONTEND_URL` | Allowed frontend origin | Optional |
-| `DATABASE_URL` | PostgreSQL connection string | Optional |
+| `DATABASE_URL` | PostgreSQL connection string | Required for real payments |
 | `PAYPAL_API_BASE` | PayPal API base URL; Sandbox by default | Optional |
 | `PAYPAL_CLIENT_ID` | PayPal Sandbox client ID | For PayPal |
 | `PAYPAL_CLIENT_SECRET` | PayPal Sandbox secret | For PayPal |
 | `PAYPAL_WEBHOOK_ID` | PayPal webhook ID | For webhook verification |
+| `PAYPAL_SIMULATION_ENABLED` | Explicit non-payment demo mode | Optional; never use for real payments |
 | `GEMINI_API_KEY` | Optional freeform AI integration key | Optional |
 | `OPENAI_API_KEY` | Optional freeform AI integration key | Optional |
 
@@ -380,7 +381,7 @@ npm run dev:frontend
 | Variable | Description | Required |
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | Backend API base URL | Optional |
-| `NEXT_PUBLIC_PAYPAL_CLIENT_ID` | PayPal client ID exposed to the UI | For PayPal UI |
+| `NEXT_PUBLIC_PAYPAL_CLIENT_ID` | Public client ID from the same PayPal Sandbox REST app as the backend | Required for Smart Buttons |
 
 ---
 
