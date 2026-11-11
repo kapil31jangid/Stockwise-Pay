@@ -354,28 +354,35 @@ export const api = {
         itemCount: Number(p.selectedItems?.length ?? p.itemCount ?? 0),
         status: (p.planStatus || p.status || 'pending_approval') as any,
         budget: Number(p.purchasingBudget ?? p.budget ?? 2000),
-        items: (p.selectedItems || p.items || []).map((i: any, iIdx: number) => ({
-          id: i.id || `item-${iIdx}`,
-          productId: i.productId || i.sku || `prod-${iIdx}`,
-          sku: i.sku,
-          productName: i.productName || i.sku,
-          category: i.category || 'Accessories',
-          currentStock: Number(i.currentStock || 10),
-          recommendedQty: Number(i.recommendedQuantity || i.quantity || 1),
-          recommendedQuantity: Number(i.recommendedQuantity || i.quantity || 1),
-          selectedQty: Number(i.recommendedQuantity || i.quantity || 1),
-          quantity: Number(i.recommendedQuantity || i.quantity || 1),
-          unitCost: Number(i.unitCost || 0),
-          subtotal: Number(i.subtotal || 0),
-          isSelected: true,
-          supplierName: i.supplierName || 'Primary Supplier',
-          selectedSupplierName: i.supplierName || 'Primary Supplier',
-          supplierId: i.supplierId || 'SUP001',
-          selectedSupplierId: i.supplierId || 'SUP001',
-          leadTimeDays: Number(i.leadTimeDays || 3),
-          riskLevel: i.riskLevel || 'MEDIUM',
-          daysUntilStockout: Number(i.daysUntilStockout || 5)
-        })),
+        items: (p.selectedItems || p.items || []).map((i: any, iIdx: number) => {
+          const qty = Number(i.recommendedQuantity || i.quantity || i.selectedQty || i.recommendedQty || 1);
+          const unitCost = Number(i.unitCost || 0);
+          const subtotal = Number(i.subtotal !== undefined && i.subtotal !== null ? i.subtotal : (unitCost * qty));
+          const supplierName = i.supplierName || i.selectedSupplierName || 'Primary Supplier';
+          const supplierId = i.supplierId || i.selectedSupplierId || 'SUP001';
+          return {
+            id: i.id || `item-${iIdx}`,
+            productId: i.productId || i.sku || `prod-${iIdx}`,
+            sku: i.sku,
+            productName: i.productName || i.sku,
+            category: i.category || 'Accessories',
+            currentStock: Number(i.currentStock || 10),
+            recommendedQty: qty,
+            recommendedQuantity: qty,
+            selectedQty: qty,
+            quantity: qty,
+            unitCost: unitCost,
+            subtotal: subtotal,
+            isSelected: true,
+            supplierName: supplierName,
+            selectedSupplierName: supplierName,
+            supplierId: supplierId,
+            selectedSupplierId: supplierId,
+            leadTimeDays: Number(i.leadTimeDays || 3),
+            riskLevel: i.riskLevel || 'MEDIUM',
+            daysUntilStockout: Number(i.daysUntilStockout || 5)
+          };
+        }),
         notes: p.notes,
         approvalNotes: p.approval?.decisionNotes,
         approvedAt: p.approval?.timestamp,
@@ -504,16 +511,22 @@ export const api = {
 
   async createPayPalOrder(orderPayload: {
     planId: string;
-    amount: number;
-    currency: string;
-    items: { name: string; quantity: number; unitPrice: number }[];
-  }): Promise<{ orderId: string; approvalUrl: string; status: string }> {
+    amount?: number;
+    currency?: string;
+    items?: { name: string; quantity: number; unitPrice: number }[];
+  }): Promise<{ orderId: string; approvalUrl: string; status: string; isMock?: boolean }> {
     if (API_BASE_URL) {
-      return fetchJson<{ orderId: string; approvalUrl: string; status: string }>(`${API_BASE_URL}/paypal/orders`, {
+      const res = await fetchJson<any>(`${API_BASE_URL}/paypal/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ planId: orderPayload.planId }),
       });
+      return {
+        orderId: res.orderId,
+        approvalUrl: res.approvalUrl || "",
+        status: res.status || "CREATED",
+        isMock: res.isMock
+      };
     }
     return {
       orderId: `PAYPAL-SANDBOX-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
@@ -524,11 +537,11 @@ export const api = {
 
   async capturePayPalOrder(capturePayload: {
     orderId: string;
-    planTitle: string;
-    supplierName: string;
-    amount: number;
-    currency: string;
-    itemSummary: string;
+    planTitle?: string;
+    supplierName?: string;
+    amount?: number;
+    currency?: string;
+    itemSummary?: string;
   }): Promise<PaymentRecord> {
     if (API_BASE_URL) {
       const res = await fetchJson<any>(`${API_BASE_URL}/paypal/orders/${capturePayload.orderId}/capture`, {
@@ -538,32 +551,32 @@ export const api = {
       return {
         id: res.id || `pay-${Date.now()}`,
         orderId: res.orderId || capturePayload.orderId,
-        planTitle: capturePayload.planTitle,
-        supplierName: capturePayload.supplierName,
-        amount: Number(res.amount ?? capturePayload.amount),
-        currency: capturePayload.currency,
-        date: new Date().toISOString().replace("T", " ").substring(0, 16),
+        planTitle: capturePayload.planTitle || `Restock Plan #${capturePayload.orderId}`,
+        supplierName: capturePayload.supplierName || "Consolidated Supplier Network",
+        amount: Number(res.amount ?? capturePayload.amount ?? 0),
+        currency: res.currency || capturePayload.currency || "USD",
+        date: res.transactionTime ? (res.transactionTime.includes('T') ? res.transactionTime.replace('T', ' ').substring(0, 16) : res.transactionTime) : new Date().toISOString().replace("T", " ").substring(0, 16),
         method: res.isMock ? "Dev Simulator" : "PayPal Sandbox",
-        status: (res.status || "completed").toLowerCase(),
+        status: (res.status || "completed").toLowerCase() as any,
         paypalTransactionId: res.captureId || `CAP-${Date.now()}`,
         invoiceNumber: `INV-SW-${Math.floor(10000 + Math.random() * 90000)}`,
-        itemSummary: capturePayload.itemSummary,
+        itemSummary: capturePayload.itemSummary || `Order ${capturePayload.orderId}`,
       };
     }
 
     const newRecord: PaymentRecord = {
       id: `pay-${Date.now()}`,
       orderId: `PO-2026-${Math.floor(1000 + Math.random() * 9000)}`,
-      planTitle: capturePayload.planTitle,
-      supplierName: capturePayload.supplierName,
-      amount: capturePayload.amount,
-      currency: capturePayload.currency,
+      planTitle: capturePayload.planTitle || "Restock Plan",
+      supplierName: capturePayload.supplierName || "Consolidated Supplier Network",
+      amount: capturePayload.amount || 0,
+      currency: capturePayload.currency || "USD",
       date: new Date().toISOString().replace("T", " ").substring(0, 16),
       method: "PayPal Sandbox",
       status: "completed",
       paypalTransactionId: `SANDBOX-${Math.random().toString(36).substring(2, 12).toUpperCase()}`,
       invoiceNumber: `INV-SW-${Math.floor(10000 + Math.random() * 90000)}`,
-      itemSummary: capturePayload.itemSummary,
+      itemSummary: capturePayload.itemSummary || `Order ${capturePayload.orderId}`,
     };
 
     const current = getStoredData(STORAGE_KEYS.PAYMENTS, initialPayments);

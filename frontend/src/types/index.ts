@@ -42,19 +42,26 @@ export interface Supplier {
 }
 
 export interface PurchasePlanItem {
+  id?: string;
   productId: string;
   productName: string;
   sku: string;
-  category: string;
+  category?: string;
   currentStock: number;
   recommendedQty: number;
+  recommendedQuantity?: number;
   selectedQty: number;
+  quantity?: number;
   unitCost: number;
-  selectedSupplierId: string;
-  selectedSupplierName: string;
-  leadTimeDays: number;
+  supplierId?: string;
+  selectedSupplierId?: string;
+  supplierName?: string;
+  selectedSupplierName?: string;
+  leadTimeDays?: number;
   subtotal: number;
-  isSelected: boolean;
+  isSelected?: boolean;
+  riskLevel?: string;
+  daysUntilStockout?: number;
 }
 
 export interface PurchasePlan {

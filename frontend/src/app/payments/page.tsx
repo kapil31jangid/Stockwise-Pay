@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   CreditCard,
   ShieldCheck,
@@ -10,6 +10,8 @@ import {
   FileText,
   Lock,
   Printer,
+  AlertCircle,
+  AlertTriangle,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { MetricCard } from "@/components/ui/MetricCard";
@@ -17,9 +19,10 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { api } from "@/services/api";
 import { PaymentRecord, PurchasePlan } from "@/types";
-
 import { useAuth } from "@/context/AuthContext";
-import { AlertCircle, AlertTriangle } from "lucide-react";
+import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
+
+const PAYPAL_CLIENT_ID = process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID || "sb";
 
 export default function PaymentsPage() {
   const { user } = useAuth();
@@ -28,48 +31,18 @@ export default function PaymentsPage() {
   const [activePlan, setActivePlan] = useState<PurchasePlan | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [selectedReceipt, setSelectedReceipt] = useState<PaymentRecord | null>(null);
 
   // PayPal Sandbox flow states
-  const [paymentStep, setPaymentStep] = useState<"idle" | "authorizing" | "ready_to_capture" | "capturing" | "success">(
-    "idle"
-  );
-  const [pendingOrder, setPendingOrder] = useState<{
-    orderId: string;
-    approvalUrl: string;
-    isMock?: boolean;
-  } | null>(null);
+  const [paymentStep, setPaymentStep] = useState<"idle" | "capturing" | "success">("idle");
   const [lastPaymentResult, setLastPaymentResult] = useState<PaymentRecord | null>(null);
   const [currency, setCurrency] = useState("USD");
+  const capturedOrderIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     loadData();
-
-    // Check return parameters from PayPal Sandbox redirect
-    if (typeof window !== "undefined") {
-      const urlParams = new URLSearchParams(window.location.search);
-      const statusParam = urlParams.get("status");
-      const orderToken = urlParams.get("token");
-      const planParam = urlParams.get("planId");
-
-      if (statusParam === "cancelled") {
-        setCheckoutError("PayPal checkout was cancelled by the buyer.");
-        setPaymentStep("idle");
-      } else if (statusParam === "authorized" || orderToken) {
-        setPaymentStep("ready_to_capture");
-        if (orderToken) {
-          setPendingOrder(prev => prev ? prev : {
-            orderId: orderToken,
-            planId: planParam || "ACTIVE-PLAN",
-            amount: 0,
-            currency: "USD",
-            approvalUrl: "",
-            isMock: false
-          });
-        }
-      }
-    }
   }, []);
 
   const loadData = async () => {
@@ -113,73 +86,6 @@ export default function PaymentsPage() {
       setCheckoutError(err.message || "Failed to approve plan");
     } finally {
       setIsApproving(false);
-    }
-  };
-
-  // Step 1: Create Order & Request Buyer Authorization
-  const handleTriggerPayPalCheckout = async () => {
-    if (!activePlan) return;
-    setIsLoading(true);
-    setCheckoutError(null);
-    setPaymentStep("authorizing");
-
-    try {
-      // 1. Prepare Order on backend
-      const order = await api.createPayPalOrder({
-        planId: activePlan.id,
-        amount: activePlan.totalAmount ?? 0,
-        currency: currency,
-        items: (activePlan.items ?? []).map((i) => ({
-          name: i.productName || i.sku,
-          quantity: i.selectedQty || i.recommendedQty || 1,
-          unitPrice: i.unitCost || 0,
-        })),
-      });
-
-      setPendingOrder(order);
-      setPaymentStep("ready_to_capture");
-
-      // In real sandbox mode with external approval link, open popup for buyer authorization
-      if (order.approvalUrl && !order.approvalUrl.includes('token=SANDBOX-ORD')) {
-        window.open(order.approvalUrl, '_blank', 'width=600,height=750,noopener,noreferrer');
-      }
-    } catch (err: any) {
-      console.error("Order creation failed:", err);
-      setCheckoutError(err.message || "PayPal Sandbox order creation failed. Ensure plan is approved.");
-      setPaymentStep("idle");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Step 2: Confirm Buyer Authorization & Execute Authoritative Capture
-  const handleConfirmAndCapturePayment = async () => {
-    if (!activePlan || !pendingOrder) return;
-    setIsLoading(true);
-    setCheckoutError(null);
-    setPaymentStep("capturing");
-
-    try {
-      const record = await api.capturePayPalOrder({
-        orderId: pendingOrder.orderId,
-        planTitle: activePlan.title || `Restock Plan #${activePlan.id}`,
-        supplierName: (activePlan.items && activePlan.items[0]?.selectedSupplierName) || "VoltCore & Apex Wholesale Consolidated",
-        amount: activePlan.totalAmount ?? 0,
-        currency: currency,
-        itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} electronics SKUs (${activePlan.title || 'Restock'})`,
-      });
-
-      // Fetch fresh authoritative state from backend
-      await loadData();
-      setLastPaymentResult(record);
-      setPaymentStep("success");
-      setPendingOrder(null);
-    } catch (captureErr: any) {
-      console.error("Capture failed:", captureErr);
-      setCheckoutError(captureErr.message || "Failed to capture payment in PayPal Sandbox");
-      setPaymentStep("ready_to_capture");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -360,21 +266,27 @@ export default function PaymentsPage() {
               <span className="text-xs font-bold text-slate-700">Order Lines for Fulfillment:</span>
               <div className="border border-slate-100 rounded-xl divide-y divide-slate-100 text-xs bg-slate-50/40">
                 {activePlan?.items && activePlan.items.length > 0 ? (
-                  activePlan.items.map((item, idx) => (
-                    <div key={item.sku || idx} className="p-3 flex justify-between items-center">
-                      <div>
-                        <span className="font-semibold text-slate-800">
-                          {item.selectedQty || item.recommendedQty || 1}x {item.productName || item.sku}
+                  activePlan.items.map((item, idx) => {
+                    const qty = item.recommendedQuantity || item.quantity || item.selectedQty || item.recommendedQty || 1;
+                    const unitCost = item.unitCost || 0;
+                    const lineSubtotal = item.subtotal !== undefined ? item.subtotal : (qty * unitCost);
+                    const vendor = item.supplierName || item.selectedSupplierName || "Primary Vendor";
+                    return (
+                      <div key={item.sku || idx} className="p-3 flex justify-between items-center">
+                        <div>
+                          <span className="font-semibold text-slate-800">
+                            {qty}x {item.productName || item.sku}
+                          </span>
+                          <p className="text-[11px] text-slate-400">
+                            Supplier: {vendor} (${unitCost.toFixed(2)} ea) • Lead: {item.leadTimeDays || 3}d
+                          </p>
+                        </div>
+                        <span className="font-bold text-slate-900">
+                          ${lineSubtotal.toFixed(2)}
                         </span>
-                        <p className="text-[11px] text-slate-400">
-                          Supplier: {item.selectedSupplierName || "Primary Vendor"} (${(item.unitCost || 0).toFixed(2)} ea) • Lead: {item.leadTimeDays || 3}d
-                        </p>
                       </div>
-                      <span className="font-bold text-slate-900">
-                        ${((item.selectedQty || item.recommendedQty || 1) * (item.unitCost || 0)).toFixed(2)}
-                      </span>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <>
                     <div className="p-3 flex justify-between items-center">
@@ -435,7 +347,7 @@ export default function PaymentsPage() {
             </div>
           </div>
 
-          {/* Right: PayPal Sandbox Checkout Button Component */}
+          {/* Right: PayPal Sandbox Smart Buttons Component */}
           <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
@@ -443,13 +355,16 @@ export default function PaymentsPage() {
                   <Lock className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-sm text-slate-900">PayPal Checkout Interface</h4>
-                  <p className="text-[11px] text-slate-500">Prepared Sandbox Button Container</p>
+                  <h4 className="font-bold text-sm text-slate-900">PayPal Smart Checkout</h4>
+                  <p className="text-[11px] text-slate-500">Official PayPal Sandbox In-Context Modal</p>
                 </div>
               </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Sandbox Verified
+              </span>
             </div>
 
-            {paymentStep === "success" ? (
+            {paymentStep === "success" && lastPaymentResult ? (
               <div className="p-6 bg-emerald-50 border border-emerald-200 rounded-2xl text-center space-y-3">
                 <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto">
                   <CheckCircle2 className="w-6 h-6" />
@@ -458,101 +373,195 @@ export default function PaymentsPage() {
                   Payment Captured Successfully!
                 </h4>
                 <p className="text-xs text-emerald-700 leading-relaxed">
-                  Sandbox Order ID:{" "}
-                  <strong className="font-mono">{lastPaymentResult?.orderId}</strong>
+                  PayPal Capture ID:{" "}
+                  <strong className="font-mono">{lastPaymentResult.paypalTransactionId}</strong>
                   <br />
-                  Supplier purchase orders have been triggered for automated dispatch.
+                  Order ID: <span className="font-mono">{lastPaymentResult.orderId}</span>
+                  <br />
+                  Amount Settled: <strong>${lastPaymentResult.amount.toFixed(2)} {lastPaymentResult.currency}</strong>
                 </p>
-                <button
-                  onClick={() => {
-                    setPaymentStep("idle");
-                    setPendingOrder(null);
-                  }}
-                  className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
-                >
-                  Done
-                </button>
-              </div>
-            ) : paymentStep === "ready_to_capture" ? (
-              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl space-y-3">
-                <div className="flex items-center gap-2 text-blue-900 font-bold text-xs">
-                  <Clock className="w-4 h-4 text-blue-600 shrink-0" />
-                  <span>PayPal Sandbox Order: <strong className="font-mono">{pendingOrder?.orderId}</strong></span>
-                </div>
-                <p className="text-[11px] text-blue-800 leading-relaxed">
-                  Please log in and authorize payment using your configured PayPal Sandbox buyer account. Once authorized, confirm capture to settle the order.
-                </p>
-                <div className="space-y-2 pt-1">
-                  {pendingOrder?.approvalUrl && (
-                    <a
-                      href={pendingOrder.approvalUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-2.5 px-3 bg-[#003087] hover:bg-[#00276D] text-white text-xs font-bold rounded-xl text-center flex items-center justify-center gap-1.5 shadow-xs transition-colors"
-                    >
-                      <span>Open PayPal Checkout Window ↗</span>
-                    </a>
-                  )}
+                <div className="flex justify-center gap-2 pt-2">
                   <button
-                    type="button"
-                    onClick={handleConfirmAndCapturePayment}
-                    disabled={isLoading}
-                    className="w-full py-3 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+                    onClick={() => setSelectedReceipt(lastPaymentResult)}
+                    className="px-3.5 py-2 text-xs font-bold rounded-xl bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100 transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    {isLoading ? <Clock className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                    <span>Confirm Buyer Authorization & Capture</span>
+                    <Receipt className="w-3.5 h-3.5" />
+                    <span>View Receipt</span>
                   </button>
                   <button
-                    type="button"
                     onClick={() => {
                       setPaymentStep("idle");
-                      setPendingOrder(null);
+                      setLastPaymentResult(null);
                     }}
-                    className="w-full py-1.5 text-slate-500 hover:text-slate-800 text-[11px] font-semibold text-center"
+                    className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
                   >
-                    Cancel Order
+                    Done
                   </button>
                 </div>
+              </div>
+            ) : isCapturing ? (
+              <div className="p-8 bg-blue-50/70 border border-blue-200 rounded-2xl text-center space-y-3">
+                <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mx-auto">
+                  <Clock className="w-5 h-5 animate-spin" />
+                </div>
+                <h4 className="font-bold text-sm text-blue-950">
+                  Capturing & Verifying Payment...
+                </h4>
+                <p className="text-xs text-blue-700 leading-relaxed">
+                  Executing server-side PayPal Orders v2 capture and reconciling double-entry budget ledger...
+                </p>
+              </div>
+            ) : activePlan && activePlan.status !== "approved" && activePlan.status !== "paid" ? (
+              <div className="p-5 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-3 text-center">
+                <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <h4 className="font-bold text-sm text-amber-950">
+                  Manager Approval Required
+                </h4>
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  PayPal settlement requires manager approval. Please approve this purchase plan to activate PayPal Smart Buttons.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleQuickApprovePlan}
+                  disabled={isApproving}
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{isApproving ? "Approving Plan..." : "Approve Plan as Manager"}</span>
+                </button>
+              </div>
+            ) : activePlan && activePlan.status === "paid" ? (
+              <div className="p-6 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-2">
+                <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <h4 className="font-bold text-sm text-slate-900">Plan Already Settled</h4>
+                <p className="text-xs text-slate-500">
+                  This purchase order has already been paid and captured. View the payment history ledger below.
+                </p>
               </div>
             ) : (
               <div className="space-y-3">
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  Triggers the PayPal Orders v2 Sandbox authorization and settlement workflow through the backend API.
-                </p>
+                <div className="flex items-center justify-between text-xs text-slate-600 pb-1">
+                  <span>Payable Amount:</span>
+                  <span className="font-bold text-slate-900 text-sm">
+                    ${(activePlan?.totalAmount ?? 0).toFixed(2)} {currency}
+                  </span>
+                </div>
 
-                {/* PayPal Styled Buttons */}
-                <div className="space-y-2 pt-1">
-                  <button
-                    onClick={handleTriggerPayPalCheckout}
-                    disabled={isLoading}
-                    className="w-full py-3 px-4 rounded-xl bg-[#FFC439] hover:bg-[#F2BA36] text-[#003087] font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all hover:shadow-md cursor-pointer disabled:opacity-50"
+                {/* PayPal Smart Buttons Container */}
+                <div className="relative min-h-[120px] rounded-xl z-0">
+                  <PayPalScriptProvider
+                    options={{
+                      clientId: PAYPAL_CLIENT_ID,
+                      currency: currency,
+                      intent: "capture",
+                      components: "buttons",
+                    }}
                   >
-                    {paymentStep === "authorizing" ? (
-                      <span className="flex items-center gap-2 text-xs font-bold text-slate-900">
-                        <Clock className="w-4 h-4 animate-spin" /> Preparing Sandbox Order...
-                      </span>
-                    ) : paymentStep === "capturing" ? (
-                      <span className="flex items-center gap-2 text-xs font-bold text-slate-900">
-                        <Clock className="w-4 h-4 animate-spin" /> Capturing Payment...
-                      </span>
-                    ) : (
-                      <>
-                        <span className="font-black italic text-base">Pay</span>
-                        <span className="font-black italic text-base text-[#0079C1]">Pal</span>
-                        <span className="text-xs font-bold ml-1 text-slate-800">
-                          Sandbox Checkout (${(activePlan?.totalAmount ?? 0).toFixed(2)})
-                        </span>
-                      </>
-                    )}
-                  </button>
+                    <PayPalButtons
+                      style={{
+                        layout: "vertical",
+                        color: "gold",
+                        shape: "rect",
+                        label: "paypal",
+                        height: 45,
+                      }}
+                      disabled={!activePlan || activePlan.status !== "approved" || isCapturing}
+                      forceReRender={[
+                        activePlan?.id,
+                        activePlan?.status,
+                        activePlan?.totalAmount,
+                        currency,
+                      ]}
+                      createOrder={async () => {
+                        if (!activePlan) {
+                          throw new Error("No purchase plan selected.");
+                        }
+                        if (activePlan.status !== "approved") {
+                          throw new Error("Purchase plan must be approved by a manager before PayPal checkout.");
+                        }
+                        setCheckoutError(null);
+                        try {
+                          const order = await api.createPayPalOrder({
+                            planId: activePlan.id,
+                            amount: activePlan.totalAmount ?? 0,
+                            currency,
+                            items: (activePlan.items ?? []).map((i) => ({
+                              name: i.productName || i.sku,
+                              quantity: i.recommendedQuantity || i.quantity || i.selectedQty || i.recommendedQty || 1,
+                              unitPrice: i.unitCost || 0,
+                            })),
+                          });
 
-                  <button
-                    onClick={handleTriggerPayPalCheckout}
-                    disabled={isLoading}
-                    className="w-full py-2.5 px-4 rounded-xl bg-[#003087] hover:bg-[#00276D] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-2xs transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    <span>PayPal Pay in 4 (Interest-Free Wholesale Financing)</span>
-                  </button>
+                          if (!order?.orderId) {
+                            throw new Error("Backend failed to return a valid PayPal order ID.");
+                          }
+                          return order.orderId;
+                        } catch (err: any) {
+                          const msg = err.message || "Failed to create PayPal Sandbox order.";
+                          setCheckoutError(msg);
+                          throw err;
+                        }
+                      }}
+                      onApprove={async (data) => {
+                        if (!activePlan) return;
+
+                        // Duplicate capture prevention guard
+                        if (capturedOrderIds.current.has(data.orderID)) {
+                          console.warn("Duplicate capture attempt prevented for order:", data.orderID);
+                          return;
+                        }
+                        capturedOrderIds.current.add(data.orderID);
+
+                        setIsCapturing(true);
+                        setPaymentStep("capturing");
+                        setCheckoutError(null);
+
+                        try {
+                          const supplierName =
+                            activePlan.items?.[0]?.supplierName ||
+                            activePlan.items?.[0]?.selectedSupplierName ||
+                            "VoltCore & Apex Wholesale Consolidated";
+
+                          const record = await api.capturePayPalOrder({
+                            orderId: data.orderID,
+                            planTitle: activePlan.title || `Restock Plan #${activePlan.id}`,
+                            supplierName,
+                            amount: activePlan.totalAmount ?? 0,
+                            currency,
+                            itemSummary: `${activePlan.itemCount || activePlan.items?.length || 1} electronics SKUs (${activePlan.title || 'Restock'})`,
+                          });
+
+                          // Show payment success only after verified server-side capture
+                          setLastPaymentResult(record);
+                          setPaymentStep("success");
+                          await loadData();
+                        } catch (captureErr: any) {
+                          console.error("Capture failed:", captureErr);
+                          capturedOrderIds.current.delete(data.orderID);
+                          setCheckoutError(captureErr.message || "Failed to capture payment in PayPal Sandbox.");
+                          setPaymentStep("idle");
+                        } finally {
+                          setIsCapturing(false);
+                        }
+                      }}
+                      onCancel={(data) => {
+                        console.log("PayPal checkout cancelled:", data);
+                        setCheckoutError("PayPal checkout was cancelled by the buyer.");
+                        setPaymentStep("idle");
+                        setIsCapturing(false);
+                      }}
+                      onError={(err: any) => {
+                        console.error("PayPal Smart Button error:", err);
+                        setCheckoutError(err?.message || "An error occurred with PayPal Sandbox checkout.");
+                        setPaymentStep("idle");
+                        setIsCapturing(false);
+                      }}
+                    />
+                  </PayPalScriptProvider>
                 </div>
 
                 <div className="p-3 bg-emerald-50/80 border border-emerald-200/80 rounded-xl text-[11px] text-emerald-800 space-y-0.5">
@@ -561,7 +570,7 @@ export default function PaymentsPage() {
                     <span>PayPal Buyer & Supplier Protection</span>
                   </p>
                   <p className="text-emerald-700 text-[10px] leading-relaxed">
-                    Automated escrow release, shipment tracking validation, and full merchant audit logging enabled for this order.
+                    Automated escrow release, shipment tracking validation, and full double-entry ledger audit logging enabled.
                   </p>
                 </div>
               </div>

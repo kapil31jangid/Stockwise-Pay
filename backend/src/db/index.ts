@@ -2570,11 +2570,19 @@ export class DatabaseStore {
     }
     this.state = this.initLocalStore();
     if (this.pgPool) {
-      await this.pgPool.query(`
-        UPDATE budget_config
-        SET spent_amount = 1200.00, allocated_amount = 1850.00, monthly_budget = 5000.00
-        WHERE id = 'default';
-      `);
+      try {
+        await this.pgPool.query(`
+          UPDATE budget_config
+          SET spent_amount = 1200.00, allocated_amount = 1850.00, monthly_budget = 5000.00
+          WHERE id = 'default';
+        `);
+      } catch (err: any) {
+        if (process.env.NODE_ENV === 'production') {
+          throw err;
+        }
+        this.pgPool = null;
+        this.isPostgres = false;
+      }
     }
   }
 }
