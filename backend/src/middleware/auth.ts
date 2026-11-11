@@ -223,7 +223,6 @@ const PUBLIC_PATHS = [
   '/api/health',
   '/api/auth/login',
   '/api/auth/logout',
-  '/api/paypal/webhook'
 ];
 
 /**

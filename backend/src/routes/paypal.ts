@@ -214,18 +214,4 @@ router.get(['/payments/history', '/payments'], async (req: Request, res: Respons
   }
 });
 
-/**
- * POST /api/paypal/webhook
- * Receive, authenticate, and process supported PayPal webhook events
- */
-router.post('/webhook', async (req: Request, res: Response) => {
-  try {
-    const event = req.body;
-    const result = await paypalService.processWebhook(req.headers, event);
-    res.json({ success: true, ...result });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
 export default router;

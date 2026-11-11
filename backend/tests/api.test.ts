@@ -1,10 +1,12 @@
 process.env.NODE_ENV = 'test';
+process.env.PAYPAL_WEBHOOK_ID = 'WH-TEST-STOCKWISE';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import app from '../src/index.js';
 import { db } from '../src/db/index.js';
 import { signAuthToken, verifyAuthToken } from '../src/middleware/auth.js';
+import { paypalService } from '../src/services/paypal.js';
 
 let server: any;
 let baseUrl = 'http://localhost:5055';
@@ -408,6 +410,101 @@ test('Webhook Security: Rejects invalid certificate origin and detects duplicate
   assert.equal(dupRes.status, 200);
   const dupData = await dupRes.json() as any;
   assert.equal(dupData.duplicate, true);
+});
+
+test('PayPal webhook is public while other PayPal routes remain protected', async () => {
+  const response = await fetch(`${baseUrl}/api/paypal/payments`);
+  assert.equal(response.status, 401);
+
+  const webhookResponse = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'paypal-transmission-id': `TX-PUBLIC-${Date.now()}`,
+      'paypal-cert-url': 'https://api.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'VALID_TEST_SIG',
+      'paypal-transmission-time': new Date().toISOString()
+    },
+    body: JSON.stringify({ id: `WH-PUBLIC-${Date.now()}`, event_type: 'CHECK.PAYOUT-ITEM' })
+  });
+  assert.equal(webhookResponse.status, 200);
+});
+
+test('PayPal webhook verification fails closed when webhook ID is missing', async () => {
+  const configuredWebhookId = process.env.PAYPAL_WEBHOOK_ID;
+  delete process.env.PAYPAL_WEBHOOK_ID;
+
+  try {
+    const verification = await paypalService.verifyWebhookSignature({
+      'paypal-transmission-id': 'TX-MISSING-ID',
+      'paypal-cert-url': 'https://api.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+      'paypal-auth-algo': 'SHA256withRSA',
+      'paypal-transmission-sig': 'VALID_TEST_SIG',
+      'paypal-transmission-time': new Date().toISOString()
+    }, { id: 'WH-MISSING-ID', event_type: 'CHECK.PAYOUT-ITEM' });
+
+    assert.equal(verification.verified, false);
+    assert.match(verification.error || '', /PAYPAL_WEBHOOK_ID/i);
+  } finally {
+    process.env.PAYPAL_WEBHOOK_ID = configuredWebhookId;
+  }
+});
+
+test('PAYMENT.CAPTURE.COMPLETED webhook settles a payment once', async () => {
+  const orderId = `ORDER-WEBHOOK-${Date.now()}`;
+  const captureId = `CAPTURE-WEBHOOK-${Date.now()}`;
+  const eventId = `WH-CAPTURE-${Date.now()}`;
+
+  await db.savePayment({
+    id: `PAY-WEBHOOK-${Date.now()}`,
+    purchasePlanId: 'PLAN-2026-001',
+    planVersion: 1,
+    paypalOrderId: orderId,
+    amount: 1,
+    currency: 'USD',
+    paymentMethod: 'PayPal Sandbox',
+    verifiedStatus: 'APPROVED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const webhookHeaders = {
+    'Content-Type': 'application/json',
+    'paypal-transmission-id': `TX-CAPTURE-${Date.now()}`,
+    'paypal-cert-url': 'https://api.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+    'paypal-auth-algo': 'SHA256withRSA',
+    'paypal-transmission-sig': 'VALID_TEST_SIG',
+    'paypal-transmission-time': new Date().toISOString()
+  };
+  const event = {
+    id: eventId,
+    event_type: 'PAYMENT.CAPTURE.COMPLETED',
+    resource: {
+      id: captureId,
+      supplementary_data: { related_ids: { order_id: orderId } }
+    }
+  };
+
+  const first = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: webhookHeaders,
+    body: JSON.stringify(event)
+  });
+  assert.equal(first.status, 200);
+  assert.equal((await first.json() as any).processed, true);
+
+  const payment = await db.getPaymentByPaypalOrderId(orderId);
+  assert.equal(payment?.verifiedStatus, 'COMPLETED');
+  assert.equal(payment?.paypalCaptureId, captureId);
+
+  const duplicate = await fetch(`${baseUrl}/api/paypal/webhook`, {
+    method: 'POST',
+    headers: webhookHeaders,
+    body: JSON.stringify(event)
+  });
+  assert.equal(duplicate.status, 200);
+  assert.equal((await duplicate.json() as any).duplicate, true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1224,4 +1321,3 @@ test('Payment Status: Unauthenticated access remains rejected', async () => {
   const data = await res.json() as any;
   assert.equal(data.success, false);
 });
-

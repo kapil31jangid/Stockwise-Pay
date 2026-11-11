@@ -852,21 +852,26 @@ class PayPalService {
       return { verified: false, error: 'SIGNATURE_VERIFICATION_FAILED' };
     }
 
-    if (process.env.NODE_ENV === 'test' && (!process.env.PAYPAL_WEBHOOK_ID || process.env.PAYPAL_WEBHOOK_ID.includes('DEMO'))) {
-      return { verified: true };
+    const webhookId = process.env.PAYPAL_WEBHOOK_ID?.trim();
+    if (!webhookId) {
+      return { verified: false, error: 'PAYPAL_WEBHOOK_ID is not configured' };
+    }
+    if (process.env.NODE_ENV === 'production' && webhookId.includes('DEMO')) {
+      return { verified: false, error: 'A real PAYPAL_WEBHOOK_ID is required in production' };
+    }
+
+    // Test mode uses the explicit test signature marker only after the webhook
+    // ID requirement has been satisfied. Production always calls PayPal.
+    if (process.env.NODE_ENV === 'test') {
+      return transmissionSig === 'INVALID_SIGNATURE_FOR_TEST'
+        ? { verified: false, error: 'SIGNATURE_VERIFICATION_FAILED' }
+        : { verified: true };
     }
 
     const token = await this.getAccessToken();
-    const webhookId = process.env.PAYPAL_WEBHOOK_ID || 'WH-SANDBOX-DEMO-2026';
 
     if (!token) {
-      if (process.env.NODE_ENV === 'test' || !process.env.PAYPAL_CLIENT_ID) {
-        if (transmissionSig === 'INVALID_SIGNATURE_FOR_TEST') {
-          return { verified: false, error: 'SIGNATURE_VERIFICATION_FAILED' };
-        }
-        return { verified: true };
-      }
-      return { verified: false, error: 'Unable to acquire PayPal OAuth token for webhook verification' };
+      return { verified: false, error: 'PayPal credentials are required for webhook verification' };
     }
 
     try {

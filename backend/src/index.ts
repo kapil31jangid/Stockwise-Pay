@@ -5,6 +5,7 @@ import inventoryRoutes from './routes/inventory.js';
 import suppliersRoutes from './routes/suppliers.js';
 import plansRoutes from './routes/plans.js';
 import paypalRoutes from './routes/paypal.js';
+import paypalWebhookRoutes from './routes/paypal-webhook.js';
 import agentRoutes from './routes/agent.js';
 import budgetRoutes from './routes/budget.js';
 import authRoutes from './routes/auth.js';
@@ -84,6 +85,10 @@ app.get(['/health', '/api/health'], (req: Request, res: Response) => {
 
 // Authentication endpoints (login, logout)
 app.use('/api/auth', authRoutes);
+
+// PayPal signs webhook requests itself; this single endpoint must be public.
+// All other PayPal routes remain behind the global authentication middleware below.
+app.use('/api/paypal', paypalWebhookRoutes);
 
 // Enforce strict authentication on ALL downstream API endpoints
 app.use('/api', requireAuth);
