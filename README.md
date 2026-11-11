@@ -650,7 +650,7 @@ Use this table to record project-specific Sandbox test accounts. **Do not commit
 | Account | Purpose | Email | Password |
 |---------|---------|-------|----------|
 | **Business Sandbox Seller** | Receives test payments (merchant) | `[Add actual test email]` | `[Do not commit password]` |
-| **Personal Sandbox Buyer** | Approves test payments (buyer) | `[Provided privately to evaluator]` | `[Provided privately; never commit]` |
+| **Personal Sandbox Buyer** | Approves test payments (buyer) | `sb-uz8wk53856521@personal.example.com` | `[Request privately; never commit]` |
 
 ### Important Notes
 
